@@ -1,0 +1,121 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-cream: #f6f1ea;
+  --color-linen: #fbf8f4;
+  --color-sand: #ede4d8;
+  --color-oat: #e2d6c6;
+  --color-line: #e6ddd1;
+  --color-bronze: #a8875e;
+  --color-bronze-dark: #8c6d46;
+  --color-bronze-light: #c9b08c;
+  --color-ink: #1f1b17;
+  --color-cocoa: #3b322a;
+  --color-stone: #6f665c;
+  --color-mist: #9a9086;
+  --color-whatsapp: #1f9d55;
+
+  --font-serif: var(--font-cormorant), "Times New Roman", serif;
+  --font-sans: var(--font-jost), ui-sans-serif, system-ui, sans-serif;
+
+  --shadow-card: 0 1px 2px rgb(31 27 23 / 0.04), 0 8px 24px -12px rgb(31 27 23 / 0.18);
+  --shadow-lift: 0 2px 4px rgb(31 27 23 / 0.05), 0 18px 40px -16px rgb(31 27 23 / 0.28);
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    background: var(--color-linen);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+  }
+  ::selection {
+    background: var(--color-bronze-light);
+    color: var(--color-ink);
+  }
+  input, select, textarea, button {
+    font: inherit;
+  }
+}
+
+@utility container-x {
+  @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+}
+@utility eyebrow {
+  @apply text-[11px] font-medium uppercase tracking-[0.22em] text-bronze;
+}
+@utility heading {
+  @apply font-serif font-medium leading-[1.08] text-ink;
+}
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-6 py-3 text-[13px] font-medium tracking-wide transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bronze;
+}
+@utility btn-primary {
+  @apply btn bg-bronze text-white shadow-sm hover:bg-bronze-dark active:scale-[0.98];
+}
+@utility btn-dark {
+  @apply btn bg-ink text-white hover:bg-cocoa active:scale-[0.98];
+}
+@utility btn-outline {
+  @apply btn border border-ink/70 text-ink hover:bg-ink hover:text-white;
+}
+@utility btn-outline-light {
+  @apply btn border border-white/80 text-white hover:bg-white hover:text-ink;
+}
+@utility btn-whatsapp {
+  @apply btn bg-whatsapp text-white hover:brightness-95 active:scale-[0.98];
+}
+@utility btn-sm {
+  @apply px-4! py-2! text-xs!;
+}
+@utility input {
+  @apply w-full rounded-md border border-line bg-white px-3.5 py-2.5 text-sm text-ink placeholder:text-mist transition focus:border-bronze focus:outline-none focus:ring-2 focus:ring-bronze/20;
+}
+@utility label {
+  @apply mb-1.5 block text-xs font-medium tracking-wide text-cocoa;
+}
+@utility card {
+  @apply rounded-xl bg-white shadow-card;
+}
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* Blog article typography, tuned to the brand palette */
+.prose-decor {
+  --tw-prose-body: var(--color-cocoa);
+  --tw-prose-headings: var(--color-ink);
+  --tw-prose-lead: var(--color-stone);
+  --tw-prose-links: var(--color-bronze-dark);
+  --tw-prose-bold: var(--color-ink);
+  --tw-prose-counters: var(--color-bronze);
+  --tw-prose-bullets: var(--color-bronze);
+  --tw-prose-hr: var(--color-line);
+  --tw-prose-quotes: var(--color-ink);
+  --tw-prose-quote-borders: var(--color-bronze);
+  --tw-prose-captions: var(--color-mist);
+  --tw-prose-th-borders: var(--color-oat);
+  --tw-prose-td-borders: var(--color-line);
+}
+.prose-decor :where(h2, h3, h4) {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.prose-decor :where(h2) { font-size: 1.9em; }
+.prose-decor :where(blockquote) {
+  background: var(--color-cream);
+  border-radius: 0 0.75rem 0.75rem 0;
+  padding: 0.75rem 1.25rem;
+  font-style: normal;
+  font-weight: 400;
+}
+.prose-decor :where(blockquote p::before, blockquote p::after) { content: none; }
+.prose-decor :where(a) { text-underline-offset: 3px; }
+.prose-decor :where(a:hover) { color: var(--color-bronze); }
+.prose-decor :where(img) { border-radius: 0.75rem; }
+.prose-decor :where(thead) { background: var(--color-cream); }
+.prose-decor :where(th, td) { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }

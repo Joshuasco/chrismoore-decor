@@ -1,0 +1,28 @@
+# Local stack: Redis + Go API + Next.js storefront/dashboard.
+# PostgreSQL is hosted on Supabase — set DATABASE_URL in backend/.env.
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["6379:6379"]
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on: [redis]
+    ports: ["8080:8080"]
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8080
+    restart: unless-stopped
+    environment:
+      API_URL: http://api:8080
+    depends_on: [api]
+    ports: ["3000:3000"]
