@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # env
 .env
 .env.local
@@ -15,3 +16,5 @@ frontend/next-env.d.ts
 *.tsbuildinfo
 
 .DS_Store
+
+

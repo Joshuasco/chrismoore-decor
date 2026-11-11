@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Chris Moore Interior Decor
 
 E-commerce platform for **Chris Moore Interior Decor**, which sells and supplies curtains & accessories, bed sheets, vertical blinds and rugs.
@@ -142,3 +143,6 @@ All money values are integers in **kobo** (₦1 = 100 kobo).
 cd backend && go test ./...      # payments (against fake providers), WhatsApp message/links, validation
 cd frontend && npm run lint && npm run build
 ```
+=======
+# chrismoore-decor
+>>>>>>> origin/main
