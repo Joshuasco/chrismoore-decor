@@ -10,6 +10,7 @@ import { apiFetch } from "@/lib/api";
 import { CONTACT_DEFAULTS } from "@/lib/contact";
 import { DEMO_ENABLED, DEMO_SETTINGS, demoWhatsAppLink, getDemoOrder, isDemoReference } from "@/lib/demo";
 import { cn, formatDate, formatNaira, STATUS_LABEL } from "@/lib/format";
+import { notifyPhrase } from "@/lib/notify";
 import type { Order, StoreSettings } from "@/lib/types";
 
 const STEPS = ["pending", "confirmed", "processing", "shipped", "delivered"];
@@ -191,7 +192,11 @@ export default function OrderView({ reference, isNew }: { reference: string; isN
               Demo order: it&apos;s saved in this browser only. Sending it on WhatsApp shares the details with the store directly.
             </p>
           ) : (
-            <p className="rounded-md bg-cream p-3 text-xs text-stone">Save this page link — you can come back to it any time to pay or track your order.</p>
+            <p className="rounded-md bg-cream p-3 text-xs text-stone">
+              {notifyPhrase(settings)
+                ? `We've sent this page's link to you ${notifyPhrase(settings)}. Open it on any device to pay or track your order.`
+                : "Save this page link — you can come back to it any time, on any device, to pay or track your order."}
+            </p>
           )}
         </section>
       </div>

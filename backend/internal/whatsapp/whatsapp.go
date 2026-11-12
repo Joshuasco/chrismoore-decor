@@ -69,6 +69,23 @@ func OrderMessage(o models.Order, orderURL string) string {
 	return b.String()
 }
 
+// InternationalPhone converts a Nigerian number in any common format
+// ("0803 123 4567", "+234 803…", "803…") to international digits
+// ("2348031234567"). Numbers already in another international format are
+// returned as digits.
+func InternationalPhone(phone string) string {
+	d := digits.ReplaceAllString(phone, "")
+	switch {
+	case strings.HasPrefix(d, "00"):
+		d = d[2:]
+	case len(d) == 11 && strings.HasPrefix(d, "0"):
+		d = "234" + d[1:]
+	case len(d) == 10 && strings.ContainsAny(d[:1], "789"):
+		d = "234" + d
+	}
+	return d
+}
+
 // ChatLink returns a wa.me deep link that opens WhatsApp with the message.
 func ChatLink(number, message string) string {
 	return "https://wa.me/" + digits.ReplaceAllString(number, "") + "?text=" + url.QueryEscape(message)

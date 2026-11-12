@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"chrismoore-decor/backend/internal/models"
+	"chrismoore-decor/backend/internal/notify"
 	"chrismoore-decor/backend/internal/payments"
 	"chrismoore-decor/backend/internal/store"
 	"chrismoore-decor/backend/internal/whatsapp"
@@ -49,6 +50,8 @@ func (s *Server) publicSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	out["paystack_enabled"] = fmt.Sprint(s.paystack.Configured())
 	out["flutterwave_enabled"] = fmt.Sprint(s.flutterwave.Configured())
+	// Which channels customers get their order link on, e.g. "email,sms".
+	out["notify_channels"] = strings.Join(s.customers.Active(), ",")
 	s.cache.SetJSON(r.Context(), key, out, catalogTTL)
 	writeJSON(w, http.StatusOK, out)
 }
@@ -155,7 +158,7 @@ func validateCheckout(req *models.CheckoutRequest) error {
 	case len(req.Items) > 50:
 		return errors.New("too many items in one order")
 	}
-	if _, err := mail.ParseAddress(req.Email); err != nil {
+	if a, err := mail.ParseAddress(req.Email); err != nil || a.Address != req.Email {
 		return errors.New("please enter a valid email address")
 	}
 	for _, it := range req.Items {
@@ -204,6 +207,7 @@ func (s *Server) createOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cache.InvalidateCatalog(r.Context())
 	go s.notifier.NotifyNewOrder(context.Background(), order, s.cfg.FrontendURL+"/admin/orders/"+order.ID)
+	s.customers.Notify(order, notify.EventPlaced)
 
 	resp := checkoutResponse{Order: order}
 	if req.Channel == "whatsapp" {
@@ -326,9 +330,12 @@ func (s *Server) confirmPayment(ctx context.Context, reference string) (models.O
 		log.Printf("payment %s amount/currency mismatch: got %d %s, expected %d NGN", reference, res.AmountKobo, res.Currency, pay.Amount)
 	}
 	if ok || res.Status == "failed" || (res.Success && !ok) {
-		o, err := s.store.RecordPaymentResult(ctx, reference, ok, res.Raw)
+		o, newlyPaid, err := s.store.RecordPaymentResult(ctx, reference, ok, res.Raw)
 		if err == nil && ok {
 			s.cache.InvalidateCatalog(ctx)
+		}
+		if err == nil && newlyPaid {
+			s.customers.Notify(o, notify.EventPaid)
 		}
 		return o, ok, err
 	}

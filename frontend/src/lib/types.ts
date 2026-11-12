@@ -79,6 +79,22 @@ export type Order = {
   item_count: number;
 };
 
+export type NotificationEvent = "placed" | "paid" | "confirmed" | "shipped" | "delivered" | "cancelled";
+
+/** A message sent to the customer about their order. */
+export type OrderNotification = {
+  id: string;
+  order_id: string;
+  event: NotificationEvent;
+  channel: "email" | "sms" | "whatsapp";
+  recipient: string;
+  status: "sending" | "sent" | "failed";
+  error: string;
+  attempts: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type OrderPage = { items: Order[]; total: number; page: number; limit: number };
 
 export type StoreSettings = Record<string, string>;

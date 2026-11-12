@@ -57,28 +57,13 @@ func main() {
 	st := store.New(pool)
 	api.EnsureAdmin(ctx, st, cfg.AdminEmail, cfg.AdminPassword)
 
+	server := api.NewServer(cfg, st, rc)
 	// Release stock held by online orders that were never paid.
-	go func() {
-		t := time.NewTicker(15 * time.Minute)
-		defer t.Stop()
-		for {
-			if n, err := st.ExpireStaleOrders(ctx, 3*time.Hour); err != nil {
-				log.Printf("expire orders: %v", err)
-			} else if n > 0 {
-				rc.InvalidateCatalog(ctx)
-				log.Printf("expired %d unpaid orders", n)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-			}
-		}
-	}()
+	go server.RunJanitor(ctx)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           api.NewServer(cfg, st, rc).Routes(),
+		Handler:           server.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
@@ -92,5 +77,6 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	server.Drain(10 * time.Second) // let customer messages finish sending
 	log.Println("server stopped")
 }

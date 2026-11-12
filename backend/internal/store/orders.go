@@ -266,20 +266,29 @@ func restock(ctx context.Context, tx pgx.Tx, orderID, reason, actor string) erro
 	return nil
 }
 
+// OrderState is an order's status before an update, so callers can tell
+// what actually changed.
+type OrderState struct {
+	Status        string
+	PaymentStatus string
+}
+
 // UpdateOrderStatus moves an order through its lifecycle. Cancelling
 // returns reserved stock; a cancelled order cannot be reopened.
-func (s *Store) UpdateOrderStatus(ctx context.Context, id, status, paymentStatus, actor string) (models.Order, error) {
+func (s *Store) UpdateOrderStatus(ctx context.Context, id, status, paymentStatus, actor string) (models.Order, OrderState, error) {
+	var prev OrderState
 	if status != "" && !slices.Contains(ValidStatuses, status) {
-		return models.Order{}, ErrInvalid
+		return models.Order{}, prev, ErrInvalid
 	}
 	if paymentStatus != "" && !slices.Contains([]string{"unpaid", "paid", "failed", "refunded"}, paymentStatus) {
-		return models.Order{}, ErrInvalid
+		return models.Order{}, prev, ErrInvalid
 	}
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var cur, curPay string
 		if err := tx.QueryRow(ctx, `select status, payment_status from orders where id=$1 for update`, id).Scan(&cur, &curPay); err != nil {
 			return err
 		}
+		prev = OrderState{Status: cur, PaymentStatus: curPay}
 		if status == "" {
 			status = cur
 		}
@@ -301,27 +310,28 @@ func (s *Store) UpdateOrderStatus(ctx context.Context, id, status, paymentStatus
 	})
 	if err != nil {
 		if errors.Is(err, ErrInvalid) {
-			return models.Order{}, err
+			return models.Order{}, prev, err
 		}
-		return models.Order{}, mapErr(err)
+		return models.Order{}, prev, mapErr(err)
 	}
-	return s.GetOrderByID(ctx, id)
+	o, err := s.GetOrderByID(ctx, id)
+	return o, prev, err
 }
 
 // ExpireStaleOrders cancels online-payment orders that were never paid so
-// their reserved stock goes back on sale. Returns the number cancelled.
-func (s *Store) ExpireStaleOrders(ctx context.Context, olderThan time.Duration) (int, error) {
+// their reserved stock goes back on sale. Returns the IDs it cancelled.
+func (s *Store) ExpireStaleOrders(ctx context.Context, olderThan time.Duration) ([]string, error) {
 	rows, err := s.db.Query(ctx, `select id from orders
 		where status='pending' and payment_status in ('unpaid','failed') and channel in ('paystack','flutterwave')
 		  and created_at < now() - make_interval(secs => $1)`, olderThan.Seconds())
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n := 0
+	var done []string
 	for _, id := range ids {
 		err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 			// Re-check under lock so we never cancel an order that just got paid.
@@ -330,14 +340,17 @@ func (s *Store) ExpireStaleOrders(ctx context.Context, olderThan time.Duration) 
 			if err != nil || tag.RowsAffected() == 0 {
 				return err
 			}
-			n++
-			return restock(ctx, tx, id, "Unpaid order expired", "system")
+			if err := restock(ctx, tx, id, "Unpaid order expired", "system"); err != nil {
+				return err
+			}
+			done = append(done, id)
+			return nil
 		})
 		if err != nil {
-			return n, err
+			return done, err
 		}
 	}
-	return n, nil
+	return done, nil
 }
 
 // ---------- Payments ----------
@@ -360,9 +373,10 @@ func (s *Store) GetPayment(ctx context.Context, reference string) (models.Paymen
 
 // RecordPaymentResult stores a verified provider result. It is idempotent:
 // a payment already marked successful is never downgraded.
-func (s *Store) RecordPaymentResult(ctx context.Context, reference string, success bool, raw any) (models.Order, error) {
+func (s *Store) RecordPaymentResult(ctx context.Context, reference string, success bool, raw any) (models.Order, bool, error) {
 	rawJSON, _ := json.Marshal(raw)
 	var orderID string
+	newlyPaid := false
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var status, provider string
 		if err := tx.QueryRow(ctx, `select order_id, status, provider from payments where reference=$1 for update`, reference).
@@ -381,9 +395,14 @@ func (s *Store) RecordPaymentResult(ctx context.Context, reference string, succe
 			return err
 		}
 		if success {
+			var prevPay string
+			if err := tx.QueryRow(ctx, `select payment_status from orders where id=$1 for update`, orderID).Scan(&prevPay); err != nil {
+				return err
+			}
 			_, err := tx.Exec(ctx, `update orders set payment_status='paid', payment_provider=$2, paid_at=now(),
 				status = case when status='pending' then 'confirmed' else status end, updated_at=now()
 				where id=$1`, orderID, provider)
+			newlyPaid = err == nil && prevPay != "paid"
 			return err
 		}
 		_, err := tx.Exec(ctx, `update orders set payment_status='failed', updated_at=now()
@@ -391,7 +410,8 @@ func (s *Store) RecordPaymentResult(ctx context.Context, reference string, succe
 		return err
 	})
 	if err != nil {
-		return models.Order{}, mapErr(err)
+		return models.Order{}, false, mapErr(err)
 	}
-	return s.GetOrderByID(ctx, orderID)
+	o, err := s.GetOrderByID(ctx, orderID)
+	return o, newlyPaid, err
 }

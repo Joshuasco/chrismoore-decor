@@ -340,3 +340,18 @@ type ReviewFilter struct {
 	Status string
 	Query  string
 }
+
+// Notification is one customer message (email, SMS or WhatsApp) sent for an
+// order event such as "placed", "paid" or "shipped".
+type Notification struct {
+	ID        string    `json:"id"`
+	OrderID   string    `json:"order_id"`
+	Event     string    `json:"event"`
+	Channel   string    `json:"channel"`
+	Recipient string    `json:"recipient"`
+	Status    string    `json:"status"`
+	Error     string    `json:"error"`
+	Attempts  int       `json:"attempts"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

@@ -25,7 +25,10 @@ const FIELDS: { key: string; label: string; hint?: string; naira?: boolean }[] =
 const INTEGRATIONS: Record<string, string> = {
   paystack: "Paystack (PAYSTACK_SECRET_KEY)",
   flutterwave: "Flutterwave (FLUTTERWAVE_SECRET_KEY)",
-  whatsapp_api: "WhatsApp Cloud API order alerts",
+  whatsapp_api: "WhatsApp alerts to you on new orders",
+  email: "Customer emails (SMTP_HOST, EMAIL_FROM)",
+  sms: "Customer SMS via Termii (TERMII_API_KEY)",
+  whatsapp_customer: "Customer WhatsApp updates (WHATSAPP_CUSTOMER_TEMPLATE)",
   image_uploads: "Supabase Storage image uploads",
   redis: "Redis cache",
 };

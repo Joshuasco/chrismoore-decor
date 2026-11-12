@@ -25,8 +25,9 @@ docker-compose.yml   Redis + API + web for local/prod-like runs
    - **WhatsApp** (default): an order is created and the shopper is taken to `/order/{ref}`, where one tap opens WhatsApp with a pre-filled message: items, totals, address and a link back to the order.
    - **Paystack / Flutterwave**: the shopper is redirected to hosted checkout and returns to `/payment/callback`. The API then **verifies the transaction with the provider** (amount + currency) before marking the order paid.
 4. **WhatsApp orders can still be paid online.** The order page shows *Pay with Paystack / Flutterwave*, and in the dashboard the owner can *Message customer* or *Copy payment link* to send that link in the chat.
-5. Webhooks (`/api/webhooks/paystack`, `/api/webhooks/flutterwave`) confirm payments even if the shopper closes the browser. Paystack webhooks are checked by HMAC signature and Flutterwave webhooks by secret hash.
-6. Cancelling an order returns its stock. Unpaid **online** orders are auto-cancelled after 3 hours to release stock. WhatsApp orders are left for the owner to manage.
+5. The customer is sent their order link by email, SMS and/or WhatsApp, plus updates as the order progresses (see *Customer order updates* below).
+6. Webhooks (`/api/webhooks/paystack`, `/api/webhooks/flutterwave`) confirm payments even if the shopper closes the browser. Paystack webhooks are checked by HMAC signature and Flutterwave webhooks by secret hash.
+7. Cancelling an order returns its stock. Unpaid **online** orders are auto-cancelled after 3 hours to release stock. WhatsApp orders are left for the owner to manage.
 
 Every stock change (order placed, cancelled, restock, damage, manual edit) is written to an inventory log.
 
@@ -93,6 +94,17 @@ cp .env.example .env        # fill in DATABASE_URL, JWT_SECRET, ADMIN_*, payment
 go run ./cmd/api -seed      # -seed loads the demo catalogue (only if products table is empty)
 ```
 
+**Auto-restart on code changes (recommended for development):** `go run` builds once and doesn't notice later edits, so use [air](https://github.com/air-verse/air):
+
+```bash
+go install github.com/air-verse/air@v1.61.7   # one-time
+export PATH="$PATH:$(go env GOPATH)/bin"      # one-time: add this line to ~/.bashrc or ~/.zshrc
+cd backend
+air                                           # instead of go run ./cmd/api
+```
+
+air rebuilds and restarts the API about a second after you save a `.go`, `.sql` or `.yaml` file, or `.env` (settings in [backend/.air.toml](backend/.air.toml)). If the new code doesn't compile, the error is shown and the previous server keeps running. To seed with air, run `go run ./cmd/api -seed -migrate` once.
+
 Requires Go 1.24+ and Redis (`docker run -p 6379:6379 redis:7-alpine`). If Redis is down, the API still works without the cache.
 
 ### 3. Storefront
@@ -125,22 +137,65 @@ If a provider's secret key is blank, that option is hidden at checkout.
 - Set the store's WhatsApp number in **Admin → Settings** (international format without `+`, e.g. `2348012345678`).
 - Optional: set `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_NOTIFY_TO` to get a WhatsApp Cloud API message for every new order. Free-form messages are only delivered inside Meta's 24-hour window, so for production, switch `NotifyNewOrder` to an approved template.
 
+### Customer order updates (email · SMS · WhatsApp)
+
+Customers track an order at `/order/{reference}` on any device. The API sends them that link when the order is placed, and again when it's **paid, confirmed, shipped, delivered or cancelled**, including when an unpaid online order expires. Each channel switches on when its keys are set in `backend/.env`. Use any combination:
+
+| Channel | Settings | Notes |
+|---|---|---|
+| Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, `EMAIL_REPLY_TO` | Any SMTP service: Brevo, Resend, Zoho, Gmail app password, Amazon SES. Port 587 uses STARTTLS; port 465 uses TLS. Sends a branded email with the items, totals and a *Track your order* button. Use a sending domain you've verified with the provider, or messages go to spam. |
+| SMS | `TERMII_API_KEY`, `TERMII_SENDER_ID`, `TERMII_BASE_URL`, `TERMII_CHANNEL` | [Termii](https://termii.com). Register a Sender ID first; approval takes a few days. Keep `TERMII_CHANNEL=dnd` so the message reaches numbers on Do-Not-Disturb, which is most Nigerian lines. Messages are one SMS part (≤160 characters) for most updates. |
+| WhatsApp | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_CUSTOMER_TEMPLATE`, `WHATSAPP_TEMPLATE_LANG` | WhatsApp Cloud API. The store messages the customer first, so Meta requires an approved **template** (below). |
+
+**WhatsApp template:** in Meta Business Manager → WhatsApp Manager → Message templates, create:
+
+- **Category:** Utility
+- **Name:** `order_update`. Put the same name in `WHATSAPP_CUSTOMER_TEMPLATE`.
+- **Language:** English (`en`). Put the same code in `WHATSAPP_TEMPLATE_LANG`.
+- **Body**, with 4 variables in this order:
+  ```
+  Hello {{1}}, {{2}}
+
+  Order reference: {{3}}
+  Track your order: {{4}}
+
+  Thank you for choosing Chris Moore Interior Decor.
+  ```
+  Example values for review: `Ada` · `your order is on its way to you.` · `CM-AB12CD34` · `https://yourdomain.com/order/CM-AB12CD34`
+
+**How sending works:**
+
+- Messages are sent in the background, so checkout never waits on a mail server or SMS gateway.
+- Each order event is sent **at most once per channel**, even when the payment callback and the webhook arrive together.
+- Phone numbers like `0803…` are converted to `234803…` automatically.
+- In **Admin → Orders → an order**, the *Customer messages* panel shows what was sent, on which channel, and any provider error, such as "insufficient balance" or "template not approved". From there you can resend any update.
+- **Admin → Settings → Integrations** shows which channels are on.
+- The checkout and order pages tell the shopper which channels their link was sent on.
+
 ## Caching
 
 Public catalogue responses (`/api/settings`, `/api/categories`, `/api/products`, `/api/products/{slug}`) are cached in Redis for 10 minutes. The cache keys carry a version number. Any product, category, settings or stock change bumps that version, so stale data is never served. Redis also rate-limits login, checkout, payment and newsletter requests.
+
+## API docs (Swagger UI)
+
+With the API running, open **http://localhost:8080/docs** for interactive Swagger UI. The raw OpenAPI 3 spec is at `/openapi.yaml`.
+
+- To try admin endpoints: run `POST /api/admin/login` (**Try it out**, then **Execute**), copy the `token`, click **Authorize**, and paste it.
+- Docs are on by default and off when `APP_ENV=production`. Set `DOCS_ENABLED=true` or `false` to override.
+- The spec is written by hand in [backend/internal/api/openapi.yaml](backend/internal/api/openapi.yaml). `go test ./...` fails if any route in `server.go` is undocumented or the spec lists a route that doesn't exist. Update both together.
 
 ## API reference (summary)
 
 Public: `GET|POST /api/products/{slug}/reviews?rating=&sort=&page=&limit=`, `GET /api/blog?category=&tag=&q=&featured=&page=&limit=`, `GET /api/blog/categories`, `GET /api/blog/{slug}`, `GET /api/settings`, `GET /api/categories`, `GET /api/products?category=&q=&sort=&min=&max=&featured=&page=&limit=`, `GET /api/products/{slug}`, `POST /api/orders`, `GET /api/orders/{ref}`, `GET /api/orders/{ref}/whatsapp`, `POST /api/orders/{ref}/pay`, `GET /api/payments/verify?reference=`, `POST /api/newsletter`
 
-Admin (Bearer JWT): `POST /api/admin/login`, `GET /api/admin/stats`, CRUD under `/api/admin/products`, `/api/admin/categories`, `POST /api/admin/products/{id}/stock`, `GET /api/admin/inventory/movements`, `GET|PATCH /api/admin/orders[/{id}]`, `POST /api/admin/orders/{id}/verify-payment`, `GET|PUT /api/admin/settings`, CRUD under `/api/admin/blog`, `GET /api/admin/reviews`, `PATCH|DELETE /api/admin/reviews/{id}`, `GET /api/admin/subscribers`, `POST /api/admin/uploads`
+Admin (Bearer JWT): `POST /api/admin/login`, `GET /api/admin/stats`, CRUD under `/api/admin/products`, `/api/admin/categories`, `POST /api/admin/products/{id}/stock`, `GET /api/admin/inventory/movements`, `GET|PATCH /api/admin/orders[/{id}]`, `POST /api/admin/orders/{id}/verify-payment`, `POST /api/admin/orders/{id}/notify`, `GET|PUT /api/admin/settings`, CRUD under `/api/admin/blog`, `GET /api/admin/reviews`, `PATCH|DELETE /api/admin/reviews/{id}`, `GET /api/admin/subscribers`, `POST /api/admin/uploads`
 
 All money values are integers in **kobo** (₦1 = 100 kobo).
 
 ## Tests
 
 ```bash
-cd backend && go test ./...      # payments (against fake providers), WhatsApp message/links, validation
+cd backend && go test ./...      # payments + email/SMS/WhatsApp senders (against fake servers), validation, API spec sync
 cd frontend && npm run lint && npm run build
 ```
 =======

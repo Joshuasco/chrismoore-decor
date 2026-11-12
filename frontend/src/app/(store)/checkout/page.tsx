@@ -13,6 +13,7 @@ import { cartSubtotal, useCart } from "@/lib/cart";
 import { useHydrated } from "@/lib/hooks";
 import { cn, formatNaira, NIGERIAN_STATES } from "@/lib/format";
 import type { Channel, Order, StoreSettings } from "@/lib/types";
+import { notifyPhrase } from "@/lib/notify";
 
 type CheckoutResponse = { order: Order; whatsapp_url?: string; checkout_url?: string; payment_error?: string };
 
@@ -210,7 +211,10 @@ export default function CheckoutPage() {
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : channel === "whatsapp" ? <WhatsAppIcon className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
             {submitting ? "Placing order…" : channel === "whatsapp" ? "Place order via WhatsApp" : `Pay ${formatNaira(subtotal + shipping)}`}
           </button>
-          <p className="mt-3 text-center text-xs text-mist">Prices and stock are confirmed when you place your order.</p>
+          <p className="mt-3 text-center text-xs text-mist">
+            Prices and stock are confirmed when you place your order.
+            {notifyPhrase(settings) && !demoCart && ` We'll send your order tracking link ${notifyPhrase(settings)}.`}
+          </p>
         </aside>
       </form>
     </div>

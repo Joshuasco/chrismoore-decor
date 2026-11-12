@@ -6,10 +6,12 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
 	"chrismoore-decor/backend/internal/models"
+	"chrismoore-decor/backend/internal/notify"
 	"chrismoore-decor/backend/internal/storage"
 	"chrismoore-decor/backend/internal/store"
 	"chrismoore-decor/backend/internal/whatsapp"
@@ -202,25 +204,28 @@ func (s *Server) adminGetOrder(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	notes, err := s.store.ListNotifications(r.Context(), o.ID)
+	if err != nil {
+		log.Printf("list notifications %s: %v", o.Reference, err)
+		notes = []models.Notification{}
+	}
+	channels := s.customers.Active()
+	if channels == nil {
+		channels = []string{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"order":        o,
-		"whatsapp_url": s.customerChatLink(o),
-		"order_url":    s.orderURL(o.Reference),
+		"order":           o,
+		"whatsapp_url":    s.customerChatLink(o),
+		"order_url":       s.orderURL(o.Reference),
+		"notifications":   notes,
+		"notify_channels": channels,
 	})
 }
 
 // customerChatLink opens a chat with the customer, pre-filled with their
 // order link so the owner can send it for online payment.
 func (s *Server) customerChatLink(o models.Order) string {
-	phone := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		return -1
-	}, o.Phone)
-	if strings.HasPrefix(phone, "0") && len(phone) == 11 {
-		phone = "234" + phone[1:] // Nigerian local format -> international
-	}
+	phone := whatsapp.InternationalPhone(o.Phone)
 	msg := fmt.Sprintf("Hello %s, thank you for your order %s with Chris Moore Interior Decor. "+
 		"You can review it and pay securely online here: %s", o.CustomerName, o.Reference, s.orderURL(o.Reference))
 	return whatsapp.ChatLink(phone, msg)
@@ -234,13 +239,50 @@ func (s *Server) adminUpdateOrder(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	o, err := s.store.UpdateOrderStatus(r.Context(), chi.URLParam(r, "id"), in.Status, in.PaymentStatus, adminFrom(r.Context()).Email)
+	o, prev, err := s.store.UpdateOrderStatus(r.Context(), chi.URLParam(r, "id"), in.Status, in.PaymentStatus, adminFrom(r.Context()).Email)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	s.cache.InvalidateCatalog(r.Context())
+	if o.PaymentStatus == "paid" && prev.PaymentStatus != "paid" {
+		s.customers.Notify(o, notify.EventPaid)
+	}
+	if o.Status != prev.Status {
+		s.customers.Notify(o, notify.StatusEvent(o.Status))
+	}
 	writeJSON(w, http.StatusOK, o)
+}
+
+// adminNotifyCustomer (re)sends one order update on every configured
+// channel — e.g. when a customer says they didn't get the message.
+func (s *Server) adminNotifyCustomer(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Event string `json:"event"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if !slices.Contains(notify.Events, in.Event) {
+		writeError(w, http.StatusBadRequest, "unknown message type")
+		return
+	}
+	if !s.customers.Enabled() {
+		writeError(w, http.StatusBadRequest, "no customer notification channel is configured")
+		return
+	}
+	o, err := s.store.GetOrderByID(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	s.customers.Send(r.Context(), o, in.Event, true)
+	list, err := s.store.ListNotifications(r.Context(), o.ID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": list})
 }
 
 // adminVerifyOrderPayment re-checks the order's latest online payment with
@@ -274,11 +316,14 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"settings": st,
 		"integrations": map[string]bool{
-			"paystack":      s.paystack.Configured(),
-			"flutterwave":   s.flutterwave.Configured(),
-			"whatsapp_api":  s.notifier.Enabled(),
-			"image_uploads": s.uploads.Configured(),
-			"redis":         s.cache.Enabled(),
+			"paystack":          s.paystack.Configured(),
+			"flutterwave":       s.flutterwave.Configured(),
+			"whatsapp_api":      s.notifier.Enabled(),
+			"email":             s.customers.Has("email"),
+			"sms":               s.customers.Has("sms"),
+			"whatsapp_customer": s.customers.Has("whatsapp"),
+			"image_uploads":     s.uploads.Configured(),
+			"redis":             s.cache.Enabled(),
 		},
 	})
 }

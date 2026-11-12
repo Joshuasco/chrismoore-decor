@@ -2,11 +2,14 @@
 package api
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"time"
 
 	"chrismoore-decor/backend/internal/cache"
 	"chrismoore-decor/backend/internal/config"
+	"chrismoore-decor/backend/internal/notify"
 	"chrismoore-decor/backend/internal/payments"
 	"chrismoore-decor/backend/internal/storage"
 	"chrismoore-decor/backend/internal/store"
@@ -24,11 +27,12 @@ type Server struct {
 	paystack    *payments.Paystack
 	flutterwave *payments.Flutterwave
 	notifier    whatsapp.Notifier
+	customers   *notify.Service
 	uploads     storage.Supabase
 }
 
 func NewServer(cfg config.Config, st *store.Store, c *cache.Cache) *Server {
-	return &Server{
+	s := &Server{
 		cfg:         cfg,
 		store:       st,
 		cache:       c,
@@ -45,7 +49,67 @@ func NewServer(cfg config.Config, st *store.Store, c *cache.Cache) *Server {
 			Bucket:     cfg.SupabaseBucket,
 		},
 	}
+	s.customers = &notify.Service{
+		Recorder: st,
+		Channels: []notify.Channel{
+			notify.SMTP{
+				Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
+				From: cfg.EmailFrom, ReplyTo: cfg.EmailReplyTo,
+			},
+			notify.Termii{APIKey: cfg.TermiiAPIKey, SenderID: cfg.TermiiSenderID, BaseURL: cfg.TermiiBaseURL, Route: cfg.TermiiChannel},
+			notify.WhatsAppTemplate{
+				Token: cfg.WhatsAppToken, PhoneNumberID: cfg.WhatsAppPhoneNumberID,
+				Template: cfg.WhatsAppCustomerTemplate, Language: cfg.WhatsAppTemplateLang,
+			},
+		},
+		StoreInfo: s.storeInfo,
+		OrderURL:  s.orderURL,
+	}
+	return s
 }
+
+func (s *Server) storeInfo(ctx context.Context) notify.StoreInfo {
+	st, err := s.store.GetSettings(ctx)
+	if err != nil {
+		return notify.StoreInfo{}
+	}
+	return notify.StoreInfo{
+		Name:     st["store_name"],
+		Phone:    st["contact_phone"],
+		WhatsApp: st["whatsapp_number"],
+		Email:    st["contact_email"],
+	}
+}
+
+// RunJanitor cancels unpaid online orders after 3 hours, every 15 minutes,
+// so their reserved stock goes back on sale, and tells those customers.
+func (s *Server) RunJanitor(ctx context.Context) {
+	t := time.NewTicker(15 * time.Minute)
+	defer t.Stop()
+	for {
+		ids, err := s.store.ExpireStaleOrders(ctx, 3*time.Hour)
+		if err != nil {
+			log.Printf("expire orders: %v", err)
+		}
+		if len(ids) > 0 {
+			s.cache.InvalidateCatalog(ctx)
+			log.Printf("expired %d unpaid orders", len(ids))
+			for _, id := range ids {
+				if o, err := s.store.GetOrderByID(ctx, id); err == nil {
+					s.customers.Notify(o, notify.EventCancelled)
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// Drain waits briefly for customer messages still being sent.
+func (s *Server) Drain(timeout time.Duration) { s.customers.Wait(timeout) }
 
 func (s *Server) provider(name string) payments.Provider {
 	switch name {
@@ -75,6 +139,11 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cache": s.cache.Enabled()})
 	})
+
+	if s.cfg.DocsEnabled {
+		r.Get("/docs", serveSwaggerUI)
+		r.Get("/openapi.yaml", serveOpenAPI)
+	}
 
 	r.Route("/api", func(r chi.Router) {
 		// Storefront
@@ -124,6 +193,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/orders/{id}", s.adminGetOrder)
 			r.Patch("/orders/{id}", s.adminUpdateOrder)
 			r.Post("/orders/{id}/verify-payment", s.adminVerifyOrderPayment)
+			r.Post("/orders/{id}/notify", s.adminNotifyCustomer)
 
 			r.Get("/settings", s.adminSettings)
 			r.Put("/settings", s.adminUpdateSettings)

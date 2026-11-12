@@ -22,6 +22,7 @@ func TestValidateCheckout(t *testing.T) {
 		func(r *models.CheckoutRequest) { r.CustomerName = "" },
 		func(r *models.CheckoutRequest) { r.Phone = "123" },
 		func(r *models.CheckoutRequest) { r.Email = "nope" },
+		func(r *models.CheckoutRequest) { r.Email = "Ada <ada@example.com>" }, // must be a bare address
 		func(r *models.CheckoutRequest) { r.Channel = "cash" },
 		func(r *models.CheckoutRequest) { r.Items = nil },
 		func(r *models.CheckoutRequest) { r.Items[0].Quantity = 0 },

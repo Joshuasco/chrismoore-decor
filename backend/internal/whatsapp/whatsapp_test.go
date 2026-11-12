@@ -33,3 +33,19 @@ func TestChatLink(t *testing.T) {
 		}
 	}
 }
+
+func TestInternationalPhone(t *testing.T) {
+	cases := map[string]string{
+		"0803 123 4567":     "2348031234567",
+		"+234 803 123 4567": "2348031234567",
+		"2348031234567":     "2348031234567",
+		"803-123-4567":      "2348031234567",
+		"00447700900123":    "447700900123",
+		"+44 7700 900123":   "447700900123",
+	}
+	for in, want := range cases {
+		if got := InternationalPhone(in); got != want {
+			t.Errorf("InternationalPhone(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -10,9 +10,16 @@ import { Badge, PageHeader, Panel, Spinner } from "@/components/admin/ui";
 import { WhatsAppIcon } from "@/components/store/WhatsAppFab";
 import { adminFetch } from "@/lib/admin";
 import { formatDate, formatNaira, STATUS_LABEL } from "@/lib/format";
-import type { Order } from "@/lib/types";
+import CustomerMessages from "@/components/admin/CustomerMessages";
+import type { Order, OrderNotification } from "@/lib/types";
 
-type Detail = { order: Order; whatsapp_url: string; order_url: string };
+type Detail = {
+  order: Order;
+  whatsapp_url: string;
+  order_url: string;
+  notifications?: OrderNotification[];
+  notify_channels?: string[];
+};
 const STATUSES = ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"];
 const PAYMENTS = ["unpaid", "paid", "failed", "refunded"];
 
@@ -29,6 +36,16 @@ export default function OrderDetail() {
   if (!d) return <Spinner />;
   const o = d.order;
 
+  // Status changes message the customer in the background; refresh the
+  // message list once those sends have had a moment to finish.
+  const refreshMessages = () => {
+    window.setTimeout(() => {
+      adminFetch<Detail>(`/orders/${id}`)
+        .then((fresh) => setD((cur) => (cur ? { ...cur, notifications: fresh.notifications } : fresh)))
+        .catch(() => {});
+    }, 4000);
+  };
+
   const update = async (patch: { status?: string; payment_status?: string }) => {
     if (patch.status === "cancelled" && !confirm("Cancel this order? Reserved stock will be returned to inventory. This can't be undone.")) return;
     setSaving(true);
@@ -36,6 +53,7 @@ export default function OrderDetail() {
       const updated = await adminFetch<Order>(`/orders/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
       setD({ ...d, order: updated });
       toast.success("Order updated");
+      if (d.notify_channels?.length) refreshMessages();
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -48,6 +66,7 @@ export default function OrderDetail() {
     try {
       const r = await adminFetch<{ verified: boolean; order: Order }>(`/orders/${id}/verify-payment`, { method: "POST" });
       setD({ ...d, order: r.order });
+      if (r.verified && d.notify_channels?.length) refreshMessages();
       if (r.verified) toast.success("Payment confirmed with provider");
       else toast("Provider reports the payment is not completed yet", { icon: "⏳" });
     } catch (e) {
@@ -144,6 +163,15 @@ export default function OrderDetail() {
               <p className="pt-3 text-stone">{o.address}{o.city && `, ${o.city}`}{o.state && `, ${o.state}`}</p>
               {o.notes && <p className="mt-3 rounded-md bg-cream p-3 text-stone"><span className="font-medium text-ink">Notes: </span>{o.notes}</p>}
             </div>
+          </Panel>
+          <Panel title="Customer messages">
+            <CustomerMessages
+              key={o.id}
+              order={o}
+              channels={d.notify_channels ?? []}
+              notifications={d.notifications ?? []}
+              onChange={(notifications) => setD((cur) => (cur ? { ...cur, notifications } : cur))}
+            />
           </Panel>
         </div>
       </div>

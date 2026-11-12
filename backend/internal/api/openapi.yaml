@@ -1,0 +1,1459 @@
+openapi: 3.0.3
+info:
+  title: Chris Moore Interior Decor API
+  version: 1.0.0
+  description: |
+    REST API for the Chris Moore Interior Decor storefront and admin dashboard.
+
+    **Money** — every amount (`price`, `total`, `revenue`, …) is an integer in **kobo** (₦1 = 100 kobo).
+
+    **Admin endpoints** — call `POST /api/admin/login`, copy the `token` from the response, click
+    **Authorize** above and paste it. Tokens last 12 hours.
+
+    **Errors** — non-2xx responses return `{"error": "human readable message"}`.
+
+    **Caching** — public catalogue, blog and review reads are cached in Redis (responses served from
+    cache carry `X-Cache: HIT`). Any admin change invalidates them immediately.
+servers:
+  - url: /
+    description: This server
+
+tags:
+  - name: Store
+    description: Settings, categories and products
+  - name: Reviews
+    description: Product reviews (approved reviews are public; new ones await moderation)
+  - name: Checkout
+    description: Orders, WhatsApp ordering and online payment
+  - name: Blog
+  - name: Webhooks
+    description: Called by payment providers — not for direct use
+  - name: Admin · Auth
+  - name: Admin · Catalogue
+  - name: Admin · Orders
+  - name: Admin · Content
+  - name: Admin · Store
+
+paths:
+  /healthz:
+    get:
+      tags: [Store]
+      summary: Health check
+      responses:
+        "200":
+          description: API is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  cache: { type: boolean, description: Whether Redis is connected }
+
+  # ---------------------------------------------------------------- Store
+  /api/settings:
+    get:
+      tags: [Store]
+      summary: Public store settings
+      description: Contact details, delivery pricing and which payment providers are enabled.
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicSettings" }
+
+  /api/categories:
+    get:
+      tags: [Store]
+      summary: List product categories
+      responses:
+        "200":
+          description: Categories in display order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Category" }
+
+  /api/products:
+    get:
+      tags: [Store]
+      summary: List / search products
+      parameters:
+        - { name: category, in: query, schema: { type: string }, description: Category slug, example: curtains }
+        - { name: q, in: query, schema: { type: string }, description: "Search name, SKU, description and category" }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [newest, price_asc, price_desc, popular, rating, name] }
+        - { name: featured, in: query, schema: { type: boolean } }
+        - { name: min, in: query, schema: { type: integer }, description: Minimum price in kobo }
+        - { name: max, in: query, schema: { type: integer }, description: Maximum price in kobo }
+        - $ref: "#/components/parameters/Page"
+        - { name: limit, in: query, schema: { type: integer, default: 12, maximum: 100 } }
+      responses:
+        "200":
+          description: A page of products
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductPage" }
+
+  /api/products/{slug}:
+    get:
+      tags: [Store]
+      summary: Get a product with related products
+      parameters: [{ $ref: "#/components/parameters/ProductSlug" }]
+      responses:
+        "200":
+          description: Product detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  product: { $ref: "#/components/schemas/Product" }
+                  related:
+                    type: array
+                    items: { $ref: "#/components/schemas/Product" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- Reviews
+  /api/products/{slug}/reviews:
+    get:
+      tags: [Reviews]
+      summary: List approved reviews with a rating summary
+      parameters:
+        - $ref: "#/components/parameters/ProductSlug"
+        - { name: rating, in: query, schema: { type: integer, minimum: 1, maximum: 5 }, description: Only reviews with this many stars }
+        - { name: sort, in: query, schema: { type: string, enum: [newest, highest, lowest], default: newest } }
+        - $ref: "#/components/parameters/Page"
+        - { name: limit, in: query, schema: { type: integer, default: 5, maximum: 50 } }
+      responses:
+        "200":
+          description: Reviews and summary (summary always covers all approved reviews)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReviewPage" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Reviews]
+      summary: Submit a review
+      description: |
+        Stored as **pending** until approved by an admin. Marked *verified* automatically when the email
+        has a paid or delivered order containing this product. One review per email per product.
+        Rate limited to 5 per hour per IP.
+      parameters: [{ $ref: "#/components/parameters/ProductSlug" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewInput" }
+      responses:
+        "201":
+          description: Accepted for moderation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: pending }
+                  message: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  # ---------------------------------------------------------------- Checkout
+  /api/orders:
+    post:
+      tags: [Checkout]
+      summary: Place an order
+      description: |
+        Prices are taken from the database (client prices are never trusted) and stock is reserved.
+
+        * `channel: whatsapp` → response includes `whatsapp_url` (wa.me link with the order pre-filled).
+        * `channel: paystack | flutterwave` → response includes `checkout_url` to redirect the shopper to.
+          If the provider can't be reached, the order is still created and `payment_error` explains why.
+
+        The customer is sent their order tracking link by email, SMS and/or WhatsApp,
+        depending on which channels are configured on the server.
+
+        Rate limited to 20 orders per hour per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckoutRequest" }
+      responses:
+        "201":
+          description: Order created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: Not enough stock (e.g. "only 2 of Marrakesh Kilim Rug left in stock")
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /api/orders/{reference}:
+    get:
+      tags: [Checkout]
+      summary: Get an order by its reference
+      parameters: [{ $ref: "#/components/parameters/OrderReference" }]
+      responses:
+        "200":
+          description: Order
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/orders/{reference}/whatsapp:
+    get:
+      tags: [Checkout]
+      summary: WhatsApp link to send this order to the store
+      parameters: [{ $ref: "#/components/parameters/OrderReference" }]
+      responses:
+        "200":
+          description: wa.me link
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  whatsapp_url: { type: string, format: uri }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/orders/{reference}/pay:
+    post:
+      tags: [Checkout]
+      summary: Start online payment for an existing order
+      description: Lets a WhatsApp order (or a retried online order) be concluded with Paystack or Flutterwave.
+      parameters: [{ $ref: "#/components/parameters/OrderReference" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider: { type: string, enum: [paystack, flutterwave] }
+      responses:
+        "200":
+          description: Hosted checkout link
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkout_url: { type: string, format: uri }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: Order already paid or cancelled, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /api/payments/verify:
+    get:
+      tags: [Checkout]
+      summary: Verify a payment after the provider redirect
+      description: Re-checks the transaction with the provider (amount and currency) before marking the order paid. Idempotent.
+      parameters:
+        - { name: reference, in: query, schema: { type: string }, description: Payment reference (Paystack `reference`) }
+        - { name: tx_ref, in: query, schema: { type: string }, description: Alternative name used by Flutterwave }
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified: { type: boolean }
+                  order: { $ref: "#/components/schemas/Order" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /api/newsletter:
+    post:
+      tags: [Store]
+      summary: Subscribe to the newsletter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  # ---------------------------------------------------------------- Blog
+  /api/blog:
+    get:
+      tags: [Blog]
+      summary: List published posts
+      description: Only posts that are published and whose publish date has passed. List items omit `content`.
+      parameters:
+        - { name: category, in: query, schema: { type: string }, description: Case-insensitive category name }
+        - { name: tag, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: featured, in: query, schema: { type: boolean } }
+        - $ref: "#/components/parameters/Page"
+        - { name: limit, in: query, schema: { type: integer, default: 9, maximum: 50 } }
+      responses:
+        "200":
+          description: A page of posts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogPage" }
+
+  /api/blog/categories:
+    get:
+      tags: [Blog]
+      summary: Blog categories with post counts
+      responses:
+        "200":
+          description: Categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BlogCategory" }
+
+  /api/blog/{slug}:
+    get:
+      tags: [Blog]
+      summary: Get a published post
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string }, example: how-to-measure-windows-for-curtains }
+      responses:
+        "200":
+          description: Post with related posts and "Shop the look" products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  post: { $ref: "#/components/schemas/BlogPost" }
+                  related:
+                    type: array
+                    items: { $ref: "#/components/schemas/BlogPost" }
+                  products:
+                    type: array
+                    items: { $ref: "#/components/schemas/Product" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- Webhooks
+  /api/webhooks/paystack:
+    post:
+      tags: [Webhooks]
+      summary: Paystack webhook
+      description: Signed with HMAC-SHA512 of the raw body using the Paystack secret key. On `charge.success` the payment is re-verified with Paystack.
+      parameters:
+        - { name: x-paystack-signature, in: header, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Received }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/webhooks/flutterwave:
+    post:
+      tags: [Webhooks]
+      summary: Flutterwave webhook
+      description: Authenticated by the `verif-hash` header matching `FLUTTERWAVE_SECRET_HASH`. The payment is re-verified with Flutterwave.
+      parameters:
+        - { name: verif-hash, in: header, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Received }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ---------------------------------------------------------------- Admin · Auth
+  /api/admin/login:
+    post:
+      tags: [Admin · Auth]
+      summary: Sign in
+      description: Returns a JWT for the **Authorize** button. Rate limited to 10 attempts per 15 minutes per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user: { $ref: "#/components/schemas/AdminUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /api/admin/me:
+    get:
+      tags: [Admin · Auth]
+      summary: Current admin
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Admin user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/admin/password:
+    post:
+      tags: [Admin · Auth]
+      summary: Change password
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, format: password }
+                new_password: { type: string, format: password, minLength: 8 }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/admin/stats:
+    get:
+      tags: [Admin · Store]
+      summary: Dashboard statistics
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Stats
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DashboardStats" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ---------------------------------------------------------------- Admin · Catalogue
+  /api/admin/products:
+    get:
+      tags: [Admin · Catalogue]
+      summary: List products (including hidden)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string }, description: Category slug }
+        - { name: sort, in: query, schema: { type: string, enum: [newest, price_asc, price_desc, popular, rating, name, stock] } }
+        - { name: low_stock, in: query, schema: { type: boolean }, description: Only products at or below their low-stock threshold }
+        - $ref: "#/components/parameters/Page"
+        - { name: limit, in: query, schema: { type: integer, default: 12, maximum: 100 } }
+      responses:
+        "200":
+          description: A page of products
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Admin · Catalogue]
+      summary: Create a product
+      description: Opening stock is recorded in the inventory log. `rating`/`review_count` are derived from approved reviews.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Product" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/admin/products/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [Admin · Catalogue]
+      summary: Get a product
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Product
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Product" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Admin · Catalogue]
+      summary: Update a product
+      description: A changed `stock` value is logged as a manual adjustment.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Product" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Admin · Catalogue]
+      summary: Delete a product
+      description: Past orders keep their line items.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/products/{id}/stock:
+    post:
+      tags: [Admin · Catalogue]
+      summary: Adjust stock
+      description: Relative change (positive to restock, negative to remove), recorded in the inventory log with a reason.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [change, reason]
+              properties:
+                change: { type: integer, example: 10, description: Non-zero }
+                reason: { type: string, example: Restock from supplier }
+      responses:
+        "200":
+          description: Updated product
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Product" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: Would make stock negative, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/admin/categories:
+    get:
+      tags: [Admin · Catalogue]
+      summary: List categories
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Category" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Admin · Catalogue]
+      summary: Create a category
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CategoryInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Category" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/admin/categories/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    put:
+      tags: [Admin · Catalogue]
+      summary: Update a category
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CategoryInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Category" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Admin · Catalogue]
+      summary: Delete a category
+      description: Its products become uncategorised.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/inventory/movements:
+    get:
+      tags: [Admin · Catalogue]
+      summary: Inventory movement log
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: product_id, in: query, schema: { type: string, format: uuid }, description: Only this product }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+      responses:
+        "200":
+          description: Newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/InventoryMovement" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/admin/uploads:
+    post:
+      tags: [Admin · Catalogue]
+      summary: Upload an image to Supabase Storage
+      description: JPEG, PNG, WebP or AVIF up to 5 MB. Requires `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: Public URL of the uploaded image
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, format: uri }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { description: Uploads not configured, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ---------------------------------------------------------------- Admin · Orders
+  /api/admin/orders:
+    get:
+      tags: [Admin · Orders]
+      summary: List orders
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/OrderStatus" } }
+        - { name: payment_status, in: query, schema: { $ref: "#/components/schemas/PaymentStatus" } }
+        - { name: channel, in: query, schema: { $ref: "#/components/schemas/Channel" } }
+        - { name: q, in: query, schema: { type: string }, description: "Reference, name, email or phone" }
+        - $ref: "#/components/parameters/Page"
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: A page of orders
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/admin/orders/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [Admin · Orders]
+      summary: Get an order
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Order with links for contacting the customer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { $ref: "#/components/schemas/Order" }
+                  whatsapp_url: { type: string, format: uri, description: "Chat with the customer, pre-filled with their payment link" }
+                  order_url: { type: string, format: uri, description: Customer-facing order / payment page }
+                  notifications:
+                    type: array
+                    description: Messages sent to the customer for this order
+                    items: { $ref: "#/components/schemas/Notification" }
+                  notify_channels:
+                    type: array
+                    description: Customer notification channels configured on the server
+                    items: { type: string, enum: [email, sms, whatsapp] }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Admin · Orders]
+      summary: Update order or payment status
+      description: >-
+        Cancelling returns reserved stock to inventory; a cancelled order can't be reopened.
+        Moving to confirmed, shipped, delivered or cancelled, or marking the order paid,
+        messages the customer on every configured channel (email, SMS, WhatsApp).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { $ref: "#/components/schemas/OrderStatus" }
+                payment_status: { $ref: "#/components/schemas/PaymentStatus" }
+      responses:
+        "200":
+          description: Updated order
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/orders/{id}/verify-payment:
+    post:
+      tags: [Admin · Orders]
+      summary: Re-check the latest online payment with the provider
+      description: Useful if a webhook was missed.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified: { type: boolean }
+                  order: { $ref: "#/components/schemas/Order" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: No online payment attempt for this order, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /api/admin/orders/{id}/notify:
+    post:
+      tags: [Admin · Orders]
+      summary: Resend a customer message
+      description: >-
+        Sends the chosen order update again on every configured channel, even if it was
+        sent before, and waits for the result. Returns the order's message history.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event]
+              properties:
+                event: { $ref: "#/components/schemas/NotificationEvent" }
+      responses:
+        "200":
+          description: Message history after the resend
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: array
+                    items: { $ref: "#/components/schemas/Notification" }
+        "400": { description: Unknown event, or no channel is configured, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- Admin · Content
+  /api/admin/blog:
+    get:
+      tags: [Admin · Content]
+      summary: List posts (drafts and scheduled included)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [draft, published, scheduled] } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+        - $ref: "#/components/parameters/Page"
+        - { name: limit, in: query, schema: { type: integer, default: 9, maximum: 50 } }
+      responses:
+        "200":
+          description: A page of posts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Admin · Content]
+      summary: Create a post
+      description: A `published` post with no `published_at` goes live now; a future date schedules it.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlogPostInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogPost" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/admin/blog/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [Admin · Content]
+      summary: Get a post (any status)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Post
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogPost" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Admin · Content]
+      summary: Update a post
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlogPostInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogPost" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Admin · Content]
+      summary: Delete a post
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/reviews:
+    get:
+      tags: [Admin · Content]
+      summary: List reviews for moderation
+      description: Pending reviews come first.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, approved, rejected] } }
+        - { name: rating, in: query, schema: { type: integer, minimum: 1, maximum: 5 } }
+        - { name: q, in: query, schema: { type: string }, description: "Reviewer, email, product or text" }
+        - $ref: "#/components/parameters/Page"
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: A page of reviews (with email, status and product details)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReviewPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/admin/reviews/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [Admin · Content]
+      summary: Approve or reject a review
+      description: The product's `rating` and `review_count` are recalculated automatically.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [pending, approved, rejected] }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Admin · Content]
+      summary: Delete a review
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- Admin · Store
+  /api/admin/settings:
+    get:
+      tags: [Admin · Store]
+      summary: Store settings and integration status
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [Admin · Store]
+      summary: Update store settings
+      description: Only known keys are saved; others are ignored. Money values are kobo strings.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PublicSettings" }
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSettings" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/admin/subscribers:
+    get:
+      tags: [Admin · Store]
+      summary: Newsletter subscribers
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    email: { type: string, format: email }
+                    created_at: { type: string, example: "2026-11-12 10:30" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token from `POST /api/admin/login`.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ProductSlug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string }
+      example: sahara-linen-blend-curtains
+    OrderReference:
+      name: reference
+      in: path
+      required: true
+      schema: { type: string }
+      example: CM-7K2QX9AB
+
+  responses:
+    OK:
+      description: Success
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok: { type: boolean, example: true }
+    BadRequest:
+      description: Invalid input
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthorized:
+      description: Missing, invalid or expired credentials
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: Not found
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Conflict:
+      description: Already exists (slug, SKU, email or duplicate review)
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    TooManyRequests:
+      description: Rate limited
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    BadGateway:
+      description: Upstream service (payment provider or storage) failed
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string, example: not found }
+
+    Kobo:
+      type: integer
+      format: int64
+      description: Amount in kobo (₦1 = 100 kobo)
+      example: 8500000
+
+    PublicSettings:
+      type: object
+      description: All values are strings.
+      properties:
+        store_name: { type: string }
+        whatsapp_number: { type: string, example: "2347039630895", description: "International format, digits only" }
+        contact_email: { type: string }
+        contact_phone: { type: string }
+        address: { type: string }
+        opening_hours: { type: string }
+        shipping_fee: { type: string, example: "500000", description: Kobo }
+        free_shipping_threshold: { type: string, example: "30000000", description: Kobo; "0" disables free delivery }
+        announcement: { type: string }
+        instagram: { type: string }
+        facebook: { type: string }
+        paystack_enabled: { type: string, enum: ["true", "false"], readOnly: true }
+        flutterwave_enabled: { type: string, enum: ["true", "false"], readOnly: true }
+        notify_channels: { type: string, example: "email,sms", readOnly: true, description: "Comma-separated channels customers receive their order link on (email, sms, whatsapp); empty if none" }
+
+    AdminSettings:
+      type: object
+      properties:
+        settings:
+          type: object
+          additionalProperties: { type: string }
+        integrations:
+          type: object
+          properties:
+            paystack: { type: boolean }
+            flutterwave: { type: boolean }
+            whatsapp_api: { type: boolean, description: WhatsApp alert to the owner on new orders }
+            email: { type: boolean, description: Customer emails (SMTP) }
+            sms: { type: boolean, description: Customer SMS (Termii) }
+            whatsapp_customer: { type: boolean, description: Customer WhatsApp template messages }
+            image_uploads: { type: boolean }
+            redis: { type: boolean }
+
+    Category:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: Curtains }
+        slug: { type: string, example: curtains }
+        description: { type: string }
+        image_url: { type: string }
+        sort_order: { type: integer }
+        product_count: { type: integer, description: Active products in this category }
+        created_at: { type: string, format: date-time }
+
+    CategoryInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        slug: { type: string, description: Optional; generated from the name }
+        description: { type: string }
+        image_url: { type: string, description: "Empty or https:// URL" }
+        sort_order: { type: integer }
+
+    Product:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        category_id: { type: string, format: uuid, nullable: true }
+        category_name: { type: string }
+        category_slug: { type: string }
+        name: { type: string, example: Sahara Linen Blend Curtains }
+        slug: { type: string, example: sahara-linen-blend-curtains }
+        sku: { type: string, example: CUR-001 }
+        short_description: { type: string }
+        description: { type: string }
+        price: { $ref: "#/components/schemas/Kobo" }
+        compare_at_price: { type: integer, format: int64, nullable: true, description: Original price in kobo (shows a sale badge) }
+        stock: { type: integer }
+        low_stock_threshold: { type: integer }
+        images: { type: array, items: { type: string } }
+        colors: { type: array, items: { type: string } }
+        sizes: { type: array, items: { type: string } }
+        material: { type: string }
+        badge: { type: string, example: Best Seller }
+        is_featured: { type: boolean }
+        is_active: { type: boolean }
+        rating: { type: number, format: float, example: 4.6, description: Average of approved reviews (0 if none) }
+        review_count: { type: integer, description: Number of approved reviews }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ProductInput:
+      type: object
+      required: [name, sku, price]
+      properties:
+        category_id: { type: string, format: uuid, nullable: true }
+        name: { type: string }
+        slug: { type: string, description: Optional; generated from the name }
+        sku: { type: string }
+        short_description: { type: string }
+        description: { type: string }
+        price: { $ref: "#/components/schemas/Kobo" }
+        compare_at_price: { type: integer, format: int64, nullable: true }
+        stock: { type: integer, minimum: 0 }
+        low_stock_threshold: { type: integer, default: 5 }
+        images: { type: array, items: { type: string }, description: "https:// URLs; first is the main image" }
+        colors: { type: array, items: { type: string } }
+        sizes: { type: array, items: { type: string } }
+        material: { type: string }
+        badge: { type: string }
+        is_featured: { type: boolean }
+        is_active: { type: boolean }
+
+    ProductPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Product" } }
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+
+    OrderStatus:
+      type: string
+      enum: [pending, confirmed, processing, shipped, delivered, cancelled]
+    PaymentStatus:
+      type: string
+      enum: [unpaid, paid, failed, refunded]
+    Channel:
+      type: string
+      enum: [whatsapp, paystack, flutterwave]
+
+    CheckoutItem:
+      type: object
+      required: [product_id, quantity]
+      properties:
+        product_id: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1, maximum: 500 }
+        color: { type: string, description: Must be one of the product's colours (or empty) }
+        size: { type: string, description: Must be one of the product's sizes (or empty) }
+
+    CheckoutRequest:
+      type: object
+      required: [customer_name, email, phone, address, channel, items]
+      properties:
+        customer_name: { type: string, example: Adaeze Okafor }
+        email: { type: string, format: email }
+        phone: { type: string, example: "0803 123 4567" }
+        address: { type: string }
+        city: { type: string }
+        state: { type: string, example: Abuja (FCT) }
+        notes: { type: string }
+        channel: { $ref: "#/components/schemas/Channel" }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: "#/components/schemas/CheckoutItem" }
+
+    CheckoutResponse:
+      type: object
+      properties:
+        order: { $ref: "#/components/schemas/Order" }
+        whatsapp_url: { type: string, format: uri, description: Present for WhatsApp orders }
+        checkout_url: { type: string, format: uri, description: Present for online payment }
+        payment_error: { type: string, description: Present if the payment provider couldn't be reached }
+
+    OrderItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        product_id: { type: string, format: uuid, nullable: true, description: Null if the product was later deleted }
+        product_name: { type: string }
+        sku: { type: string }
+        image_url: { type: string }
+        unit_price: { $ref: "#/components/schemas/Kobo" }
+        quantity: { type: integer }
+        color: { type: string }
+        size: { type: string }
+
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string, example: CM-7K2QX9AB }
+        customer_name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        address: { type: string }
+        city: { type: string }
+        state: { type: string }
+        notes: { type: string }
+        subtotal: { $ref: "#/components/schemas/Kobo" }
+        shipping_fee: { $ref: "#/components/schemas/Kobo" }
+        total: { $ref: "#/components/schemas/Kobo" }
+        channel: { $ref: "#/components/schemas/Channel" }
+        status: { $ref: "#/components/schemas/OrderStatus" }
+        payment_status: { $ref: "#/components/schemas/PaymentStatus" }
+        payment_provider: { type: string }
+        paid_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        item_count: { type: integer }
+        items: { type: array, items: { $ref: "#/components/schemas/OrderItem" } }
+
+    NotificationEvent:
+      type: string
+      enum: [placed, paid, confirmed, shipped, delivered, cancelled]
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid }
+        event: { $ref: "#/components/schemas/NotificationEvent" }
+        channel: { type: string, enum: [email, sms, whatsapp] }
+        recipient: { type: string, description: Email address or phone number (international digits) }
+        status: { type: string, enum: [sending, sent, failed] }
+        error: { type: string, description: Provider error when status is failed }
+        attempts: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    OrderPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Order" } }
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+
+    InventoryMovement:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        product_id: { type: string, format: uuid }
+        product_name: { type: string }
+        change: { type: integer, example: -2 }
+        reason: { type: string, example: Order placed }
+        order_reference: { type: string, nullable: true }
+        actor: { type: string, description: 'Admin email, "customer" or "system"' }
+        created_at: { type: string, format: date-time }
+
+    AdminUser:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        name: { type: string }
+        role: { type: string, enum: [admin, staff] }
+        created_at: { type: string, format: date-time }
+
+    DashboardStats:
+      type: object
+      properties:
+        revenue: { $ref: "#/components/schemas/Kobo" }
+        revenue_this_month: { $ref: "#/components/schemas/Kobo" }
+        orders_total: { type: integer }
+        orders_pending: { type: integer }
+        orders_today: { type: integer }
+        products_active: { type: integer }
+        low_stock: { type: integer }
+        out_of_stock: { type: integer }
+        inventory_value: { $ref: "#/components/schemas/Kobo" }
+        subscribers: { type: integer }
+        reviews_pending: { type: integer }
+        sales_by_day:
+          type: array
+          description: Last 30 days
+          items:
+            type: object
+            properties:
+              day: { type: string, format: date }
+              revenue: { $ref: "#/components/schemas/Kobo" }
+              orders: { type: integer }
+        channel_split:
+          type: object
+          additionalProperties: { type: integer }
+          example: { whatsapp: 12, paystack: 5, flutterwave: 2 }
+        top_products:
+          type: array
+          items:
+            type: object
+            properties:
+              product_id: { type: string }
+              name: { type: string }
+              image_url: { type: string }
+              units: { type: integer }
+              revenue: { $ref: "#/components/schemas/Kobo" }
+        recent_orders: { type: array, items: { $ref: "#/components/schemas/Order" } }
+        low_stock_products: { type: array, items: { $ref: "#/components/schemas/Product" } }
+
+    BlogPost:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        slug: { type: string }
+        excerpt: { type: string }
+        content: { type: string, description: Markdown. Omitted in list responses. }
+        cover_image: { type: string }
+        category: { type: string, example: Guides }
+        tags: { type: array, items: { type: string } }
+        author_name: { type: string }
+        status: { type: string, enum: [draft, published] }
+        is_featured: { type: boolean }
+        published_at: { type: string, format: date-time, nullable: true }
+        reading_minutes: { type: integer }
+        product_category: { type: string, description: Category slug for "Shop the look" }
+        seo_title: { type: string }
+        seo_description: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BlogPostInput:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        slug: { type: string, description: Optional; generated from the title }
+        excerpt: { type: string }
+        content: { type: string, description: Markdown (required to publish) }
+        cover_image: { type: string, description: "Empty or https:// URL" }
+        category: { type: string, default: Inspiration }
+        tags: { type: array, items: { type: string } }
+        author_name: { type: string }
+        status: { type: string, enum: [draft, published], default: draft }
+        is_featured: { type: boolean }
+        published_at: { type: string, format: date-time, nullable: true, description: Future date schedules the post }
+        product_category: { type: string }
+        seo_title: { type: string }
+        seo_description: { type: string }
+
+    BlogPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/BlogPost" } }
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+
+    BlogCategory:
+      type: object
+      properties:
+        name: { type: string }
+        count: { type: integer }
+
+    Review:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        product_id: { type: string, format: uuid }
+        name: { type: string, example: Adaeze O. }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        title: { type: string }
+        body: { type: string }
+        verified: { type: boolean, description: Reviewer has a paid/delivered order for this product }
+        created_at: { type: string, format: date-time }
+        email: { type: string, description: Admin responses only }
+        status: { type: string, enum: [pending, approved, rejected], description: Admin responses only }
+        product_name: { type: string, description: Admin responses only }
+        product_slug: { type: string, description: Admin responses only }
+        product_image: { type: string, description: Admin responses only }
+
+    ReviewInput:
+      type: object
+      required: [name, email, rating, body]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 60 }
+        email: { type: string, format: email, description: Never published }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        title: { type: string, maxLength: 120 }
+        body: { type: string, minLength: 10, maxLength: 2000 }
+        website: { type: string, description: Honeypot — leave empty }
+
+    ReviewSummary:
+      type: object
+      properties:
+        average: { type: number, format: float, example: 4.6 }
+        count: { type: integer, example: 5 }
+        breakdown:
+          type: object
+          description: Stars → number of approved reviews
+          additionalProperties: { type: integer }
+          example: { "1": 0, "2": 0, "3": 0, "4": 2, "5": 3 }
+
+    ReviewPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Review" } }
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+        summary: { $ref: "#/components/schemas/ReviewSummary" }
