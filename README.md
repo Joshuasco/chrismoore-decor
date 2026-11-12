@@ -105,7 +105,7 @@ air                                           # instead of go run ./cmd/api
 
 air rebuilds and restarts the API about a second after you save a `.go`, `.sql` or `.yaml` file, or `.env` (settings in [backend/.air.toml](backend/.air.toml)). If the new code doesn't compile, the error is shown and the previous server keeps running. To seed with air, run `go run ./cmd/api -seed -migrate` once.
 
-Requires Go 1.24+ and Redis (`docker run -p 6379:6379 redis:7-alpine`). If Redis is down, the API still works without the cache.
+Requires Go 1.26+ and Redis (`docker run -p 6379:6379 redis:7-alpine`). If Redis is down, the API still works without the cache.
 
 ### 3. Storefront
 
