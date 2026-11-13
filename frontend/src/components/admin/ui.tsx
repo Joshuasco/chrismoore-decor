@@ -23,6 +23,11 @@ const BADGE: Record<string, string> = {
   draft: "bg-stone-100 text-stone-600 ring-stone-200",
   published: "bg-emerald-50 text-emerald-800 ring-emerald-200",
   scheduled: "bg-sky-50 text-sky-800 ring-sky-200",
+  disapproved: "bg-red-50 text-red-700 ring-red-200",
+  void: "bg-stone-100 text-stone-600 ring-stone-200",
+  overdue: "bg-red-50 text-red-700 ring-red-200",
+  admin: "bg-ink text-white ring-ink",
+  staff: "bg-sand text-cocoa ring-oat",
 };
 
 export function Badge({ value }: { value: string }) {
@@ -66,7 +71,19 @@ export function Panel({ title, action, children, className }: { title?: string; 
   );
 }
 
-export function Modal({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: React.ReactNode }) {
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  wide,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: React.ReactNode;
+  wide?: boolean;
+}) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -77,7 +94,7 @@ export function Modal({ open, onClose, title, children }: { open: boolean; onClo
   return (
     <div className="fixed inset-0 z-50 grid place-items-center p-4" role="dialog" aria-modal aria-label={title}>
       <div className="absolute inset-0 bg-ink/40" onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-xl bg-white p-6 shadow-lift">
+      <div className={cn("relative max-h-[calc(100svh-2rem)] w-full overflow-y-auto rounded-xl bg-white p-6 shadow-lift", wide ? "max-w-2xl" : "max-w-md")}>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="font-serif text-2xl font-semibold">{title}</h2>
           <button onClick={onClose} aria-label="Close" className="rounded p-1 hover:bg-sand"><X className="h-5 w-5" /></button>

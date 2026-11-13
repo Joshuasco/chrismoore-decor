@@ -5,7 +5,8 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
-    ports: ["6379:6379"]
+    # Only the API talks to Redis (over the compose network), so no host port
+    # is published — avoids clashing with a Redis already running locally.
 
   api:
     build: ./backend

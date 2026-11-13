@@ -1,19 +1,27 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { Loader2 } from "lucide-react";
+import { Clock, Loader2, Lock, Mail } from "lucide-react";
+import AuthInput from "@/components/admin/AuthInput";
 import Logo from "@/components/store/Logo";
 import { PUBLIC_API_URL } from "@/lib/api";
-import { setToken } from "@/lib/admin";
+import { setToken, takeLoginNotice } from "@/lib/admin";
 
 export default function AdminLogin() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  // Why the last session ended, or why sign-in was refused (pending/disapproved).
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    Promise.resolve(takeLoginNotice()).then((msg) => msg && setNotice(msg));
+  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,7 +33,13 @@ export default function AdminLogin() {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        setNotice(data.error || "Your account isn't approved yet.");
+        setLoading(false);
+        return;
+      }
       if (!res.ok) throw new Error(data.error || "Sign in failed");
+      setNotice("");
       setToken(data.token);
       toast.success(`Welcome back${data.user?.name ? `, ${data.user.name}` : ""}`);
       const next = new URLSearchParams(window.location.search).get("next");
@@ -55,21 +69,30 @@ export default function AdminLogin() {
       <div className="flex items-center justify-center bg-linen px-6 py-16">
         <form onSubmit={submit} className="w-full max-w-sm">
           <Logo />
-          <h1 className="heading mt-10 text-4xl">Admin sign in</h1>
-          <p className="mt-2 text-sm text-stone">Use the admin account configured on the API server.</p>
+          <h1 className="heading mt-10 text-4xl">Dashboard sign in</h1>
+          <p className="mt-2 text-sm text-stone">For Chris Moore admins and approved staff.</p>
+          {notice && (
+            <p role="status" className="mt-6 flex gap-2.5 rounded-lg bg-amber-50 p-3.5 text-sm text-amber-900 ring-1 ring-inset ring-amber-200">
+              <Clock className="mt-0.5 h-4 w-4 shrink-0" /> {notice}
+            </p>
+          )}
           <div className="mt-8 space-y-4">
             <div>
               <label className="label" htmlFor="email">Email</label>
-              <input id="email" type="email" required className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" />
+              <AuthInput icon={Mail} id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" />
             </div>
             <div>
               <label className="label" htmlFor="password">Password</label>
-              <input id="password" type="password" required className="input" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+              <AuthInput icon={Lock} id="password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
             </div>
           </div>
           <button className="btn-primary mt-6 w-full py-3" disabled={loading}>
             {loading && <Loader2 className="h-4 w-4 animate-spin" />} Sign in
           </button>
+          <p className="mt-6 text-center text-sm text-stone">
+            New staff member?{" "}
+            <Link href="/admin/register" className="font-medium text-bronze hover:text-bronze-dark">Request access</Link>
+          </p>
         </form>
       </div>
     </div>

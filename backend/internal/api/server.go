@@ -137,7 +137,7 @@ func (s *Server) Routes() http.Handler {
 	}))
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cache": s.cache.Enabled()})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cache": s.cache.Up()})
 	})
 
 	if s.cfg.DocsEnabled {
@@ -162,53 +162,99 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/blog", s.listPosts)
 		r.Get("/blog/categories", s.blogCategories)
 		r.Get("/blog/{slug}", s.getPost)
+		r.Get("/invoices/{token}", s.getInvoice)
+		r.Post("/invoices/{token}/pay", s.payInvoice)
 
 		// Provider webhooks
 		r.Post("/webhooks/paystack", s.paystackWebhook)
 		r.Post("/webhooks/flutterwave", s.flutterwaveWebhook)
 
-		// Admin dashboard
+		// Admin dashboard. Every signed-in route checks that the account is
+		// approved; each section also needs its service (admins have all).
 		r.Post("/admin/login", s.login)
+		r.Post("/admin/register", s.register)
 		r.Route("/admin", func(r chi.Router) {
 			r.Use(s.requireAdmin)
 			r.Get("/me", s.me)
 			r.Post("/password", s.changePassword)
-			r.Get("/stats", s.stats)
 
-			r.Get("/products", s.adminListProducts)
-			r.Post("/products", s.adminCreateProduct)
-			r.Get("/products/{id}", s.adminGetProduct)
-			r.Put("/products/{id}", s.adminUpdateProduct)
-			r.Delete("/products/{id}", s.adminDeleteProduct)
-			r.Post("/products/{id}/stock", s.adminAdjustStock)
+			r.With(requirePerm("dashboard")).Get("/stats", s.stats)
 
-			r.Get("/categories", s.listCategories)
-			r.Post("/categories", s.adminCreateCategory)
-			r.Put("/categories/{id}", s.adminUpdateCategory)
-			r.Delete("/categories/{id}", s.adminDeleteCategory)
+			// Product lists are also needed to pick items for stock moves and invoices.
+			r.With(requirePerm("products", "inventory", "invoices")).Get("/products", s.adminListProducts)
+			r.With(requirePerm("products", "inventory", "invoices")).Get("/products/{id}", s.adminGetProduct)
+			r.With(requirePerm("products", "blog")).Get("/categories", s.listCategories)
+			r.With(requirePerm("products", "blog")).Post("/uploads", s.adminUpload)
+			r.Group(func(r chi.Router) {
+				r.Use(requirePerm("products"))
+				r.Post("/products", s.adminCreateProduct)
+				r.Put("/products/{id}", s.adminUpdateProduct)
+				r.Delete("/products/{id}", s.adminDeleteProduct)
+				r.Post("/categories", s.adminCreateCategory)
+				r.Put("/categories/{id}", s.adminUpdateCategory)
+				r.Delete("/categories/{id}", s.adminDeleteCategory)
+			})
 
-			r.Get("/inventory/movements", s.adminMovements)
+			r.Group(func(r chi.Router) {
+				r.Use(requirePerm("inventory"))
+				r.Post("/products/{id}/stock", s.adminAdjustStock)
+				r.Get("/inventory/movements", s.adminMovements)
+			})
 
-			r.Get("/orders", s.adminListOrders)
-			r.Get("/orders/{id}", s.adminGetOrder)
-			r.Patch("/orders/{id}", s.adminUpdateOrder)
-			r.Post("/orders/{id}/verify-payment", s.adminVerifyOrderPayment)
-			r.Post("/orders/{id}/notify", s.adminNotifyCustomer)
+			r.Group(func(r chi.Router) {
+				r.Use(requirePerm("orders"))
+				r.Get("/orders", s.adminListOrders)
+				r.Get("/orders/{id}", s.adminGetOrder)
+				r.Patch("/orders/{id}", s.adminUpdateOrder)
+				r.Post("/orders/{id}/verify-payment", s.adminVerifyOrderPayment)
+				r.Post("/orders/{id}/notify", s.adminNotifyCustomer)
+			})
 
-			r.Get("/settings", s.adminSettings)
-			r.Put("/settings", s.adminUpdateSettings)
-			r.Get("/blog", s.adminListPosts)
-			r.Post("/blog", s.adminSavePost)
-			r.Get("/blog/{id}", s.adminGetPost)
-			r.Put("/blog/{id}", s.adminSavePost)
-			r.Delete("/blog/{id}", s.adminDeletePost)
+			r.Group(func(r chi.Router) {
+				r.Use(requirePerm("invoices"))
+				r.Get("/invoices", s.adminListInvoices)
+				r.Post("/invoices", s.adminCreateInvoice)
+				r.Get("/invoices/{id}", s.adminGetInvoice)
+				r.Put("/invoices/{id}", s.adminUpdateInvoice)
+				r.Patch("/invoices/{id}/status", s.adminSetInvoiceStatus)
+				r.Delete("/invoices/{id}", s.adminDeleteInvoice)
+			})
 
-			r.Get("/reviews", s.adminListReviews)
-			r.Patch("/reviews/{id}", s.adminUpdateReview)
-			r.Delete("/reviews/{id}", s.adminDeleteReview)
+			r.Group(func(r chi.Router) {
+				r.Use(requirePerm("settings"))
+				r.Get("/settings", s.adminSettings)
+				r.Put("/settings", s.adminUpdateSettings)
+			})
 
-			r.Get("/subscribers", s.adminSubscribers)
-			r.Post("/uploads", s.adminUpload)
+			r.Group(func(r chi.Router) {
+				r.Use(requirePerm("blog"))
+				r.Get("/blog", s.adminListPosts)
+				r.Post("/blog", s.adminSavePost)
+				r.Get("/blog/{id}", s.adminGetPost)
+				r.Put("/blog/{id}", s.adminSavePost)
+				r.Delete("/blog/{id}", s.adminDeletePost)
+			})
+
+			r.Group(func(r chi.Router) {
+				r.Use(requirePerm("reviews"))
+				r.Get("/reviews", s.adminListReviews)
+				r.Patch("/reviews/{id}", s.adminUpdateReview)
+				r.Delete("/reviews/{id}", s.adminDeleteReview)
+			})
+
+			r.With(requirePerm("subscribers")).Get("/subscribers", s.adminSubscribers)
+
+			// Staff accounts and groups: admins only.
+			r.Group(func(r chi.Router) {
+				r.Use(requireRoleAdmin)
+				r.Get("/staff", s.adminListStaff)
+				r.Patch("/staff/{id}", s.adminUpdateStaff)
+				r.Delete("/staff/{id}", s.adminDeleteStaff)
+				r.Get("/groups", s.adminListGroups)
+				r.Post("/groups", s.adminSaveGroup)
+				r.Put("/groups/{id}", s.adminSaveGroup)
+				r.Delete("/groups/{id}", s.adminDeleteGroup)
+			})
 		})
 	})
 	return r

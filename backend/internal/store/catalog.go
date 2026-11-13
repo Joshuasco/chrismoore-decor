@@ -331,10 +331,11 @@ func (s *Store) AdjustStock(ctx context.Context, id string, change int, reason, 
 func (s *Store) ListMovements(ctx context.Context, productID string, limit int) ([]models.InventoryMovement, error) {
 	_, limit = clampPage(1, limit, 50, 500)
 	rows, err := s.db.Query(ctx, `
-		select m.id, m.product_id, p.name, m.change, m.reason, o.reference, m.actor, m.created_at
+		select m.id, m.product_id, p.name, m.change, m.reason, coalesce(o.reference, iv.number), m.actor, m.created_at
 		from inventory_movements m
 		join products p on p.id = m.product_id
 		left join orders o on o.id = m.order_id
+		left join invoices iv on iv.id = m.invoice_id
 		where ($1 = '' or m.product_id::text = $1)
 		order by m.created_at desc limit $2`, productID, limit)
 	if err != nil {

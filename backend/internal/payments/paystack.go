@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 type Paystack struct {
@@ -42,7 +43,7 @@ func (p *Paystack) Initialize(ctx context.Context, r InitRequest) (string, error
 		"metadata": map[string]any{
 			"order_reference": r.OrderRef,
 			"custom_fields": []map[string]string{
-				{"display_name": "Order", "variable_name": "order_reference", "value": r.OrderRef},
+				{"display_name": strings.SplitN(r.description(), " ", 2)[0], "variable_name": "order_reference", "value": r.OrderRef},
 				{"display_name": "Customer", "variable_name": "customer_name", "value": r.Name},
 			},
 		},

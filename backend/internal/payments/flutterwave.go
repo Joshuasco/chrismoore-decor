@@ -45,7 +45,7 @@ func (f *Flutterwave) Initialize(ctx context.Context, r InitRequest) (string, er
 		},
 		"customizations": map[string]string{
 			"title":       "Chris Moore Interior Decor",
-			"description": "Order " + r.OrderRef,
+			"description": r.description(),
 		},
 		"meta": map[string]string{"order_reference": r.OrderRef},
 	}

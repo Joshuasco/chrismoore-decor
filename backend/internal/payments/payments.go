@@ -22,6 +22,15 @@ type InitRequest struct {
 	Name        string
 	CallbackURL string
 	OrderRef    string
+	// Description shown on the checkout page; defaults to "Order {OrderRef}".
+	Description string
+}
+
+func (r InitRequest) description() string {
+	if r.Description != "" {
+		return r.Description
+	}
+	return "Order " + r.OrderRef
 }
 
 type Result struct {

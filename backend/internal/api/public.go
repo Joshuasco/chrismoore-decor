@@ -354,7 +354,7 @@ func (s *Server) verifyPayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing payment reference")
 		return
 	}
-	o, ok, err := s.confirmPayment(r.Context(), ref)
+	out, err := s.confirmAnyPayment(r.Context(), ref)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "payment not found")
@@ -364,7 +364,7 @@ func (s *Server) verifyPayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "we couldn't confirm your payment yet — please refresh in a moment")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"verified": ok, "order": o})
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) subscribe(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,10 @@ info:
     **Admin endpoints** — call `POST /api/admin/login`, copy the `token` from the response, click
     **Authorize** above and paste it. Tokens last 12 hours.
 
+    **Roles** — admins can use every endpoint. Staff sign up with `POST /api/admin/register`, can't sign
+    in until an admin approves them, and can only use the services their group grants (others return
+    `403`). Disapproving an account blocks its existing tokens immediately (`401`).
+
     **Errors** — non-2xx responses return `{"error": "human readable message"}`.
 
     **Caching** — public catalogue, blog and review reads are cached in Redis (responses served from
@@ -26,6 +30,8 @@ tags:
   - name: Checkout
     description: Orders, WhatsApp ordering and online payment
   - name: Blog
+  - name: Invoices
+    description: Customer-facing invoice and payment link (the token is the secret in the link)
   - name: Webhooks
     description: Called by payment providers — not for direct use
   - name: Admin · Auth
@@ -33,6 +39,9 @@ tags:
   - name: Admin · Orders
   - name: Admin · Content
   - name: Admin · Store
+  - name: Admin · Invoices
+  - name: Admin · Staff
+    description: Staff approval and groups (admins only)
 
 paths:
   /healthz:
@@ -274,9 +283,58 @@ paths:
                 type: object
                 properties:
                   verified: { type: boolean }
-                  order: { $ref: "#/components/schemas/Order" }
+                  order: { $ref: "#/components/schemas/Order", description: Present for order payments }
+                  invoice: { $ref: "#/components/schemas/Invoice", description: Present for invoice payments }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /api/invoices/{token}:
+    get:
+      tags: [Invoices]
+      summary: View an invoice
+      parameters: [{ $ref: "#/components/parameters/InvoiceToken" }]
+      responses:
+        "200":
+          description: Invoice (internal fields omitted)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invoice" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/invoices/{token}/pay:
+    post:
+      tags: [Invoices]
+      summary: Pay an invoice online
+      description: >-
+        Starts a Paystack or Flutterwave checkout for an unpaid invoice and returns the URL to redirect to.
+        If the invoice has no email, `email` is required (providers need one) and is saved on the invoice.
+        The provider redirects back to `/payment/callback?provider=…&invoice={token}`.
+        Rate limited to 30 attempts per hour per IP.
+      parameters: [{ $ref: "#/components/parameters/InvoiceToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider: { type: string, enum: [paystack, flutterwave] }
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: Checkout started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkout_url: { type: string, format: uri }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: Already paid or cancelled, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
         "502": { $ref: "#/components/responses/BadGateway" }
 
   /api/newsletter:
@@ -411,19 +469,56 @@ paths:
                   token: { type: string }
                   user: { $ref: "#/components/schemas/AdminUser" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Correct password, but the account is pending approval or disapproved", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /api/admin/register:
+    post:
+      tags: [Admin · Auth]
+      summary: Request staff access
+      description: Creates a staff account with status `pending`. It can sign in once an admin approves it. Rate limited to 5 per hour per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 8, maxLength: 72 }
+      responses:
+        "201":
+          description: Request received
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [pending] }
+                  message: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
 
   /api/admin/me:
     get:
       tags: [Admin · Auth]
-      summary: Current admin
+      summary: Current user
+      description: Includes the services this user can access, and (for admins) how many staff await approval.
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Admin user
+          description: Signed-in user
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/AdminUser" }
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/AdminUser" }
+                  - type: object
+                    properties:
+                      pending_staff: { type: integer, description: "Admins only: accounts awaiting approval" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/admin/password:
@@ -810,6 +905,254 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  # ---------------------------------------------------------------- Admin · Invoices
+  /api/admin/invoices:
+    get:
+      tags: [Admin · Invoices]
+      summary: List invoices
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [unpaid, paid, void, overdue] } }
+        - { name: q, in: query, schema: { type: string }, description: "Search number, customer name, email or phone" }
+        - { $ref: "#/components/parameters/Page" }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: Newest first (items omit line items)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoicePage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Admin · Invoices]
+      summary: Create an invoice
+      description: >-
+        Totals are calculated by the server. Lines linked to a catalogue product reserve stock (409 if
+        there isn't enough), like website orders; voiding or deleting an unpaid invoice returns it.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvoiceInput" }
+      responses:
+        "201":
+          description: Created, with share links
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "Not enough stock for a catalogue line", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/admin/invoices/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [Admin · Invoices]
+      summary: Get an invoice with share links
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Invoice
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Admin · Invoices]
+      summary: Edit an unpaid invoice
+      description: Only the difference in catalogue quantities moves stock (409 if there isn't enough).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvoiceInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceDetail" }
+        "400": { description: Invalid input, or the invoice is paid or void, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "Not enough stock for a catalogue line", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    delete:
+      tags: [Admin · Invoices]
+      summary: Delete an unpaid or void invoice
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "400": { description: Paid invoices can't be deleted, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/invoices/{id}/status:
+    patch:
+      tags: [Admin · Invoices]
+      summary: Mark paid, void, or reopen
+      description: >-
+        `paid` records a manual payment (e.g. bank transfer). `void` cancels an unpaid invoice. `unpaid`
+        reopens a void invoice, or one marked paid by hand. Invoices paid online can't be changed.
+        Voiding returns reserved stock; reopening a void invoice reserves it again (409 if it's gone).
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [paid, unpaid, void] }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "Not enough stock for a catalogue line", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ---------------------------------------------------------------- Admin · Staff
+  /api/admin/staff:
+    get:
+      tags: [Admin · Staff]
+      summary: List admin and staff accounts
+      description: Pending accounts first, then newest first.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, approved, disapproved] } }
+      responses:
+        "200":
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminUser" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/admin/staff/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [Admin · Staff]
+      summary: Approve, disapprove, change role or group
+      description: >-
+        Omitted fields are unchanged; `group_id: ""` removes the account from its group. You can't change
+        your own role or approval, and the last approved admin can't be demoted or disapproved.
+        Disapproving signs the account out immediately.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StaffUpdate" }
+      responses:
+        "200":
+          description: Updated account
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUser" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Admin · Staff]
+      summary: Delete an account
+      description: Not your own account, and not the last approved admin.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/groups:
+    get:
+      tags: [Admin · Staff]
+      summary: List groups and the grantable services
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Groups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/StaffGroup" } }
+                  permissions: { type: array, items: { $ref: "#/components/schemas/Permission" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Admin · Staff]
+      summary: Create a group
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StaffGroupInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffGroup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/admin/groups/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    put:
+      tags: [Admin · Staff]
+      summary: Update a group (name, services, members)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StaffGroupInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffGroup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Admin · Staff]
+      summary: Delete a group
+      description: Its members stay approved but lose the group's services.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   # ---------------------------------------------------------------- Admin · Content
   /api/admin/blog:
     get:
@@ -1008,6 +1351,12 @@ components:
       description: Token from `POST /api/admin/login`.
 
   parameters:
+    InvoiceToken:
+      name: token
+      in: path
+      required: true
+      schema: { type: string }
+      description: Secret token from the invoice link (`/invoice/{token}`)
     Page:
       name: page
       in: query
@@ -1043,7 +1392,10 @@ components:
       description: Invalid input
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Unauthorized:
-      description: Missing, invalid or expired credentials
+      description: Missing, invalid or expired credentials, or the account is no longer approved
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: Signed in, but this account's group doesn't grant this service (or it's admin-only)
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     NotFound:
       description: Not found
@@ -1313,13 +1665,126 @@ components:
         email: { type: string }
         name: { type: string }
         role: { type: string, enum: [admin, staff] }
+        status: { type: string, enum: [pending, approved, disapproved] }
+        group_id: { type: string, format: uuid, nullable: true }
+        group_name: { type: string }
+        permissions: { type: array, items: { type: string }, description: "Effective services (admins: all)" }
+        status_changed_at: { type: string, format: date-time, nullable: true }
+        last_login_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
+    Permission:
+      type: object
+      properties:
+        key: { type: string, enum: [dashboard, orders, invoices, products, inventory, reviews, blog, subscribers, settings] }
+        label: { type: string }
+    StaffGroup:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        permissions: { type: array, items: { type: string } }
+        member_ids: { type: array, items: { type: string, format: uuid } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    StaffGroupInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 60 }
+        description: { type: string, maxLength: 300 }
+        permissions: { type: array, items: { type: string }, description: Permission keys }
+        member_ids: { type: array, items: { type: string, format: uuid }, description: "Replaces the members when present (staff accounts only)" }
+    StaffUpdate:
+      type: object
+      properties:
+        status: { type: string, enum: [approved, disapproved, pending] }
+        role: { type: string, enum: [admin, staff] }
+        group_id: { type: string, description: "Group ID, or empty to remove from the group" }
+    InvoiceItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        product_id: { type: string, format: uuid, nullable: true }
+        description: { type: string }
+        quantity: { type: integer }
+        unit_price: { $ref: "#/components/schemas/Kobo" }
+        amount: { $ref: "#/components/schemas/Kobo" }
+    Invoice:
+      type: object
+      properties:
+        id: { type: string, format: uuid, description: Admin responses only }
+        number: { type: string, example: INV-00001 }
+        token: { type: string, description: Secret used in the public link }
+        customer_name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        address: { type: string }
+        notes: { type: string }
+        subtotal: { $ref: "#/components/schemas/Kobo" }
+        discount: { $ref: "#/components/schemas/Kobo" }
+        delivery_fee: { $ref: "#/components/schemas/Kobo" }
+        tax_rate: { type: number, example: 7.5, description: Percent }
+        tax: { $ref: "#/components/schemas/Kobo" }
+        total: { $ref: "#/components/schemas/Kobo" }
+        status: { type: string, enum: [unpaid, paid, void] }
+        overdue: { type: boolean }
+        due_date: { type: string, example: "2026-12-01", description: "YYYY-MM-DD, or empty" }
+        payment_provider: { type: string, enum: ["", paystack, flutterwave, manual] }
+        paid_at: { type: string, format: date-time, nullable: true }
+        created_by_name: { type: string, description: Admin responses only }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        items: { type: array, items: { $ref: "#/components/schemas/InvoiceItem" } }
+    InvoiceInput:
+      type: object
+      required: [customer_name, items]
+      properties:
+        customer_name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        address: { type: string }
+        notes: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            required: [description, quantity, unit_price]
+            properties:
+              product_id: { type: string, format: uuid, description: Optional catalogue product }
+              description: { type: string }
+              quantity: { type: integer, minimum: 1 }
+              unit_price: { $ref: "#/components/schemas/Kobo" }
+        discount: { $ref: "#/components/schemas/Kobo" }
+        delivery_fee: { $ref: "#/components/schemas/Kobo" }
+        tax_rate: { type: number, minimum: 0, maximum: 100, description: "Percent, applied after discount" }
+        due_date: { type: string, example: "2026-12-01" }
+    InvoiceDetail:
+      type: object
+      properties:
+        invoice: { $ref: "#/components/schemas/Invoice" }
+        invoice_url: { type: string, format: uri, description: Payment link to share with the customer }
+        whatsapp_url: { type: string, description: "wa.me link to the customer with the invoice message (empty without a phone)" }
+        email_url: { type: string, description: "mailto: link with the invoice message (empty without an email)" }
+    InvoicePage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Invoice" } }
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
 
     DashboardStats:
       type: object
       properties:
-        revenue: { $ref: "#/components/schemas/Kobo" }
-        revenue_this_month: { $ref: "#/components/schemas/Kobo" }
+        revenue: { $ref: "#/components/schemas/Kobo", description: Paid orders + paid invoices }
+        revenue_this_month: { $ref: "#/components/schemas/Kobo", description: Paid orders + paid invoices this month }
+        invoice_revenue: { $ref: "#/components/schemas/Kobo", description: The paid-invoice part of revenue }
+        invoices_unpaid: { type: integer }
+        invoices_outstanding: { $ref: "#/components/schemas/Kobo", description: Total owed on unpaid invoices }
+        invoices_overdue: { type: integer }
+        invoices_overdue_amount: { $ref: "#/components/schemas/Kobo" }
+        recent_invoices: { type: array, items: { $ref: "#/components/schemas/Invoice" } }
         orders_total: { type: integer }
         orders_pending: { type: integer }
         orders_today: { type: integer }
@@ -1336,8 +1801,9 @@ components:
             type: object
             properties:
               day: { type: string, format: date }
-              revenue: { $ref: "#/components/schemas/Kobo" }
+              revenue: { $ref: "#/components/schemas/Kobo", description: "Orders (by day placed) + invoices (by day paid)" }
               orders: { type: integer }
+              invoice_revenue: { $ref: "#/components/schemas/Kobo" }
         channel_split:
           type: object
           additionalProperties: { type: integer }

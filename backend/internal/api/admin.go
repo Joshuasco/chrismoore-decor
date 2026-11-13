@@ -323,7 +323,7 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 			"sms":               s.customers.Has("sms"),
 			"whatsapp_customer": s.customers.Has("whatsapp"),
 			"image_uploads":     s.uploads.Configured(),
-			"redis":             s.cache.Enabled(),
+			"redis":             s.cache.Up(),
 		},
 	})
 }

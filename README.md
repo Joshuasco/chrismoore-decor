@@ -67,15 +67,69 @@ As soon as the database has real products or posts, they replace the demo conten
 
 ## Admin dashboard (`/admin`)
 
-- **Overview**: paid revenue, orders, open orders, stock alerts, inventory value, 30-day revenue chart, channel split, top products, recent orders, low-stock list
+- **Overview**: paid revenue (orders + invoices), orders, open orders, unpaid/overdue invoices, stock alerts, inventory value, 30-day revenue chart, channel split, top products, recent orders and invoices, money owed, low-stock list
 - **Orders**: filter by status, payment, channel; search; update fulfilment and payment status; message the customer on WhatsApp; re-check payment with the provider
 - **Products**: create, edit and delete; images by upload (Supabase Storage) or URL; colours, sizes, badge, featured, visibility
 - **Inventory**: +/− stock adjustments with reasons, plus a movement history
 - **Reviews**: approve, reject or delete customer reviews; filter by status or stars; search
 - **Blog**: write posts in Markdown with a formatting toolbar and live preview; cover and inline image upload; drafts, scheduled publishing, featured post; categories and tags; SEO title, description and slug; a "Shop the look" product category
-- **Categories**, **Subscribers** (CSV export), **Settings** (WhatsApp number, delivery fee, free-delivery threshold, announcement, contact details, integration status, change password)
+- **Invoices**: bill customers for custom work, such as made-to-measure curtains or installation, and share a secure payment link (details below)
+- **Categories**, **Subscribers** (CSV export), **Settings** (WhatsApp number, delivery fee, free-delivery threshold, announcement, contact details, integration status)
+- **Staff & roles** (admins only): approve staff and manage groups (details below)
+- **My account**: profile, the sections you can use, change password
 
-The first admin is created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` on API start-up if no admin exists.
+The first admin is created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` on API start-up if no approved admin exists. If that email already has an account (e.g. it signed up as staff), it's promoted to admin instead. Use this to get back in if every admin is locked out.
+
+### Staff accounts and roles
+
+- **Admins** can use everything, including **Staff & roles**. **Staff** only see the sections their **group** allows.
+- **Signing up:** new staff request access at **`/admin/register`** (there's a *Request access* link on the sign-in page). Their account is **pending** and can't sign in until an admin approves it. If WhatsApp owner alerts are set up, you get a message for each request, and the sidebar shows a count of pending requests.
+- **Approving:** in **Admin → Staff & roles → Team members**, admins can:
+  - **Approve** or **Disapprove** accounts;
+  - assign each staff member to a group;
+  - make someone an admin or staff;
+  - delete accounts.
+- **Disapproving** someone signs them out **immediately**: the API checks the account on every request, not just at sign-in. They see "Your access has been disapproved…" until an admin approves them again.
+- **Groups:** in **Groups → New group**, give the group a name, tick the sections it can use, and tick its members. The sections are:
+  - Overview & sales stats
+  - Orders
+  - Invoices
+  - Products & categories
+  - Inventory
+  - Reviews
+  - Blog
+  - Subscribers
+  - Store settings
+
+  Each staff member is in one group. Staff with no group can sign in but only see *My account*.
+- **Safeguards:** nobody can change their own role or approval, and the last approved admin can't be demoted, disapproved or deleted.
+- **Enforced by the API:** each admin endpoint requires its section, and a hidden menu item isn't the only protection. Staff without access get `403`, and the dashboard shows a *No access* page.
+
+### Invoices
+
+1. **Create the invoice:** go to **Admin → Invoices → New invoice**.
+   - Enter the customer's name, phone, and optionally email and address.
+   - Add lines, either by searching the catalogue or typing any item or service with a quantity and price.
+   - Add an optional discount, delivery fee, VAT % and due date.
+   - Add notes, e.g. bank details or a delivery timeline.
+
+   Totals are calculated on the server.
+- **Stock:** catalogue products on an invoice are **reserved from stock when it's created**, just like website orders. If there isn't enough stock, the invoice is refused with "only N left".
+  - Editing an unpaid invoice moves only the difference.
+  - **Voiding** or **deleting** an unpaid invoice puts the stock back, and reopening a void invoice takes it again.
+  - Every change appears in **Inventory → movements** as "Invoice INV-…".
+  - Typed items or services, such as installation, never affect stock.
+2. **Share the link:** after saving you get a **payment link** (`/invoice/{token}`), plus **Copy**, **Send on WhatsApp** (pre-filled message to the customer's number) and **Send by email** buttons.
+3. **The customer's page** shows the invoice with your logo and contact details. They can **pay with Paystack or Flutterwave**, or **download a PDF**. Without an email on the invoice, they're asked for one before paying, since the providers need it. The page works on phones and prints cleanly.
+4. **Online payments** are verified with the provider (amount and currency) through the callback or webhook, using the same rules as orders. The invoice then shows **Paid**, and you get a WhatsApp alert if owner alerts are set up.
+5. **Status changes:**
+   - **Mark as paid** for bank transfers or cash;
+   - **Void** to stop the link accepting payments;
+   - **Reopen** a void invoice, or undo a manual "paid".
+
+   Unpaid invoices can be edited, and the link stays the same. Paid invoices are locked and can't be deleted.
+
+Invoice links use a random 20-character token, so they can't be guessed from the invoice number. Search engines are told not to index them.
 
 ## Setup
 
@@ -174,7 +228,7 @@ Customers track an order at `/order/{reference}` on any device. The API sends th
 
 ## Caching
 
-Public catalogue responses (`/api/settings`, `/api/categories`, `/api/products`, `/api/products/{slug}`) are cached in Redis for 10 minutes. The cache keys carry a version number. Any product, category, settings or stock change bumps that version, so stale data is never served. Redis also rate-limits login, checkout, payment and newsletter requests.
+Public catalogue responses (`/api/settings`, `/api/categories`, `/api/products`, `/api/products/{slug}`) are cached in Redis for 10 minutes. The cache keys carry a version number. Any product, category, settings or stock change bumps that version, so stale data is never served. Redis also rate-limits login, staff sign-up, checkout, payment and newsletter requests. If Redis becomes unreachable, the API skips it for 15 seconds at a time instead of waiting on every request, so an outage never slows the store down.
 
 ## API docs (Swagger UI)
 
@@ -188,7 +242,9 @@ With the API running, open **http://localhost:8080/docs** for interactive Swagge
 
 Public: `GET|POST /api/products/{slug}/reviews?rating=&sort=&page=&limit=`, `GET /api/blog?category=&tag=&q=&featured=&page=&limit=`, `GET /api/blog/categories`, `GET /api/blog/{slug}`, `GET /api/settings`, `GET /api/categories`, `GET /api/products?category=&q=&sort=&min=&max=&featured=&page=&limit=`, `GET /api/products/{slug}`, `POST /api/orders`, `GET /api/orders/{ref}`, `GET /api/orders/{ref}/whatsapp`, `POST /api/orders/{ref}/pay`, `GET /api/payments/verify?reference=`, `POST /api/newsletter`
 
-Admin (Bearer JWT): `POST /api/admin/login`, `GET /api/admin/stats`, CRUD under `/api/admin/products`, `/api/admin/categories`, `POST /api/admin/products/{id}/stock`, `GET /api/admin/inventory/movements`, `GET|PATCH /api/admin/orders[/{id}]`, `POST /api/admin/orders/{id}/verify-payment`, `POST /api/admin/orders/{id}/notify`, `GET|PUT /api/admin/settings`, CRUD under `/api/admin/blog`, `GET /api/admin/reviews`, `PATCH|DELETE /api/admin/reviews/{id}`, `GET /api/admin/subscribers`, `POST /api/admin/uploads`
+Admin (Bearer JWT): `POST /api/admin/login`, `GET /api/admin/stats`, CRUD under `/api/admin/products`, `/api/admin/categories`, `POST /api/admin/products/{id}/stock`, `GET /api/admin/inventory/movements`, `GET|PATCH /api/admin/orders[/{id}]`, `POST /api/admin/orders/{id}/verify-payment`, `POST /api/admin/orders/{id}/notify`, `GET|PUT /api/admin/settings`, CRUD under `/api/admin/blog`, `GET /api/admin/reviews`, `PATCH|DELETE /api/admin/reviews/{id}`, `GET /api/admin/subscribers`, `POST /api/admin/uploads`, CRUD under `/api/admin/invoices` + `PATCH /api/admin/invoices/{id}/status`; admins only: `GET /api/admin/staff`, `PATCH|DELETE /api/admin/staff/{id}`, CRUD under `/api/admin/groups`
+
+Public invoices: `GET /api/invoices/{token}`, `POST /api/invoices/{token}/pay`. Staff sign-up: `POST /api/admin/register`
 
 All money values are integers in **kobo** (₦1 = 100 kobo).
 

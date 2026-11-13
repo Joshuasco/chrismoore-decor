@@ -43,6 +43,12 @@ export const STATUS_LABEL: Record<string, string> = {
   draft: "Draft",
   published: "Published",
   scheduled: "Scheduled",
+  disapproved: "Disapproved",
+  void: "Void",
+  overdue: "Overdue",
+  manual: "Marked paid",
+  admin: "Admin",
+  staff: "Staff",
 };
 
 export const NIGERIAN_STATES = [

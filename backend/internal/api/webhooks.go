@@ -20,7 +20,7 @@ func (s *Server) paystackWebhook(w http.ResponseWriter, r *http.Request) {
 		} `json:"data"`
 	}
 	if json.Unmarshal(body, &evt) == nil && evt.Event == "charge.success" && evt.Data.Reference != "" {
-		if _, _, err := s.confirmPayment(r.Context(), evt.Data.Reference); err != nil {
+		if _, err := s.confirmAnyPayment(r.Context(), evt.Data.Reference); err != nil {
 			log.Printf("paystack webhook %s: %v", evt.Data.Reference, err)
 		}
 	}
@@ -51,7 +51,7 @@ func (s *Server) flutterwaveWebhook(w http.ResponseWriter, r *http.Request) {
 			ref = evt.TxRef
 		}
 		if ref != "" {
-			if _, _, err := s.confirmPayment(r.Context(), ref); err != nil {
+			if _, err := s.confirmAnyPayment(r.Context(), ref); err != nil {
 				log.Printf("flutterwave webhook %s: %v", ref, err)
 			}
 		}

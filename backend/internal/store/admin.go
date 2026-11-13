@@ -7,39 +7,6 @@ import (
 	"chrismoore-decor/backend/internal/models"
 )
 
-// ---------- Admin users ----------
-
-func (s *Store) AdminByEmail(ctx context.Context, email string) (models.AdminUser, error) {
-	var u models.AdminUser
-	err := s.db.QueryRow(ctx, `select id, email, name, role, password_hash, created_at from admin_users where email=$1`,
-		strings.ToLower(strings.TrimSpace(email))).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.PasswordHash, &u.CreatedAt)
-	return u, mapErr(err)
-}
-
-func (s *Store) AdminByID(ctx context.Context, id string) (models.AdminUser, error) {
-	var u models.AdminUser
-	err := s.db.QueryRow(ctx, `select id, email, name, role, password_hash, created_at from admin_users where id=$1`, id).
-		Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.PasswordHash, &u.CreatedAt)
-	return u, mapErr(err)
-}
-
-func (s *Store) CountAdmins(ctx context.Context) (int, error) {
-	var n int
-	err := s.db.QueryRow(ctx, `select count(*) from admin_users`).Scan(&n)
-	return n, err
-}
-
-func (s *Store) CreateAdmin(ctx context.Context, email, name, hash, role string) error {
-	_, err := s.db.Exec(ctx, `insert into admin_users (email, name, password_hash, role) values ($1,$2,$3,$4)`,
-		strings.ToLower(strings.TrimSpace(email)), name, hash, role)
-	return mapErr(err)
-}
-
-func (s *Store) UpdateAdminPassword(ctx context.Context, id, hash string) error {
-	_, err := s.db.Exec(ctx, `update admin_users set password_hash=$2 where id=$1`, id, hash)
-	return mapErr(err)
-}
-
 // ---------- Settings ----------
 
 // PublicSettingKeys are safe to expose to the storefront.
@@ -141,22 +108,43 @@ func (s *Store) Stats(ctx context.Context) (models.DashboardStats, error) {
 		return st, err
 	}
 
+	// Invoices: paid ones count as revenue; unpaid ones are money owed.
+	var invoiceMonth int64
+	err = s.db.QueryRow(ctx, `
+		select
+		  coalesce(sum(total) filter (where status='paid'),0),
+		  coalesce(sum(total) filter (where status='paid' and paid_at >= date_trunc('month', now())),0),
+		  count(*) filter (where status='unpaid'),
+		  coalesce(sum(total) filter (where status='unpaid'),0),
+		  count(*) filter (where status='unpaid' and due_date < (now() at time zone 'Africa/Lagos')::date),
+		  coalesce(sum(total) filter (where status='unpaid' and due_date < (now() at time zone 'Africa/Lagos')::date),0)
+		from invoices`).Scan(&st.InvoiceRevenue, &invoiceMonth, &st.InvoicesUnpaid, &st.InvoicesOutstanding,
+		&st.InvoicesOverdue, &st.InvoicesOverdueAmount)
+	if err != nil {
+		return st, err
+	}
+	st.Revenue += st.InvoiceRevenue
+	st.RevenueThisMonth += invoiceMonth
+
+	// Orders count on the day they were placed; invoices on the day they were paid.
 	rows, err := s.db.Query(ctx, `
 		select to_char(d::date, 'YYYY-MM-DD'),
-		       coalesce(sum(o.total) filter (where o.payment_status='paid'),0),
-		       count(o.id)
+		       coalesce((select sum(o.total) from orders o where date_trunc('day', o.created_at) = d
+		                 and o.status <> 'cancelled' and o.payment_status='paid'),0),
+		       (select count(*) from orders o where date_trunc('day', o.created_at) = d and o.status <> 'cancelled'),
+		       coalesce((select sum(v.total) from invoices v where date_trunc('day', v.paid_at) = d and v.status='paid'),0)
 		from generate_series(date_trunc('day', now()) - interval '29 days', date_trunc('day', now()), interval '1 day') d
-		left join orders o on date_trunc('day', o.created_at) = d and o.status <> 'cancelled'
-		group by d order by d`)
+		order by d`)
 	if err != nil {
 		return st, err
 	}
 	for rows.Next() {
 		var d models.DailySales
-		if err := rows.Scan(&d.Day, &d.Revenue, &d.Orders); err != nil {
+		if err := rows.Scan(&d.Day, &d.Revenue, &d.Orders, &d.InvoiceRevenue); err != nil {
 			rows.Close()
 			return st, err
 		}
+		d.Revenue += d.InvoiceRevenue
 		st.SalesByDay = append(st.SalesByDay, d)
 	}
 	rows.Close()
@@ -177,11 +165,22 @@ func (s *Store) Stats(ctx context.Context) (models.DashboardStats, error) {
 	}
 	rows.Close()
 
+	// Best sellers across orders and (non-void) invoices.
 	rows, err = s.db.Query(ctx, `
-		select coalesce(i.product_id::text,''), i.product_name, max(i.image_url), sum(i.quantity), sum(i.quantity * i.unit_price)
-		from order_items i join orders o on o.id = i.order_id
-		where o.status <> 'cancelled'
-		group by i.product_id, i.product_name order by sum(i.quantity) desc limit 5`)
+		select pid, max(name), coalesce(max(img), ''), sum(units), sum(rev) from (
+			select coalesce(i.product_id::text,'') pid, i.product_name name, i.image_url img,
+			       i.quantity units, i.quantity * i.unit_price rev
+			from order_items i join orders o on o.id = i.order_id
+			where o.status <> 'cancelled'
+			union all
+			select ii.product_id::text, p.name, p.images[1], ii.quantity, ii.quantity * ii.unit_price
+			from invoice_items ii
+			join invoices v on v.id = ii.invoice_id
+			join products p on p.id = ii.product_id
+			where v.status <> 'void'
+		) x
+		group by pid, case when pid = '' then name end
+		order by sum(units) desc limit 5`)
 	if err != nil {
 		return st, err
 	}
@@ -201,6 +200,12 @@ func (s *Store) Stats(ctx context.Context) (models.DashboardStats, error) {
 		return st, err
 	}
 	st.RecentOrders = recent.Items
+
+	invoices, err := s.ListInvoices(ctx, models.InvoiceFilter{Limit: 5})
+	if err != nil {
+		return st, err
+	}
+	st.RecentInvoices = invoices.Items
 
 	low, err := s.ListProducts(ctx, models.ProductFilter{LowStockOnly: true, Sort: "stock", Limit: 8})
 	if err != nil {

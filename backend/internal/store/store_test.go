@@ -97,3 +97,79 @@ func TestNormalizeReview(t *testing.T) {
 		}
 	}
 }
+
+func TestInvoiceTotals(t *testing.T) {
+	items := []models.InvoiceItemInput{{Quantity: 2, UnitPrice: 5000000}, {Quantity: 1, UnitPrice: 2500000}} // ₦100,000 + ₦25,000
+	sub, tax, total := InvoiceTotals(items, 1000000, 500000, 750)                                            // ₦10,000 off, ₦5,000 delivery, 7.5% VAT
+	if sub != 12500000 || tax != 862500 || total != 12500000-1000000+862500+500000 {
+		t.Fatalf("totals = %d, %d, %d", sub, tax, total)
+	}
+	if _, tax, _ := InvoiceTotals(items, 0, 0, 0); tax != 0 {
+		t.Errorf("no tax rate should mean no tax, got %d", tax)
+	}
+}
+
+func TestNormalizeInvoice(t *testing.T) {
+	good := func() models.InvoiceInput {
+		return models.InvoiceInput{CustomerName: " Ada Obi ", Email: " ADA@Example.com ", TaxRate: 7.5, DueDate: "2026-12-01",
+			Items: []models.InvoiceItemInput{{Description: " Curtain installation ", Quantity: 1, UnitPrice: 2000000}}}
+	}
+	in := good()
+	bp, err := NormalizeInvoice(&in)
+	if err != nil || bp != 750 || in.CustomerName != "Ada Obi" || in.Email != "ada@example.com" || in.Items[0].Description != "Curtain installation" {
+		t.Fatalf("normalize: bp=%d err=%v %+v", bp, err, in)
+	}
+	bad := []func(*models.InvoiceInput){
+		func(in *models.InvoiceInput) { in.CustomerName = "" },
+		func(in *models.InvoiceInput) { in.Items = nil },
+		func(in *models.InvoiceInput) { in.Items[0].Description = " " },
+		func(in *models.InvoiceInput) { in.Items[0].Quantity = 0 },
+		func(in *models.InvoiceInput) { in.Items[0].UnitPrice = -1 },
+		func(in *models.InvoiceInput) { in.Email = "nope" },
+		func(in *models.InvoiceInput) { in.DueDate = "01/12/2026" },
+		func(in *models.InvoiceInput) { in.TaxRate = 101 },
+		func(in *models.InvoiceInput) { in.Discount = 3000000 },        // more than the subtotal
+		func(in *models.InvoiceInput) { in.Items[0].UnitPrice = 5000 }, // total under ₦100
+	}
+	for i, mut := range bad {
+		in := good()
+		mut(&in)
+		if _, err := NormalizeInvoice(&in); !errors.Is(err, ErrInvalid) {
+			t.Errorf("case %d: want ErrInvalid, got %v", i, err)
+		}
+	}
+	in = good()
+	in.Email = ""
+	if _, err := NormalizeInvoice(&in); err != nil {
+		t.Errorf("email should be optional: %v", err)
+	}
+}
+
+func TestNormalizeGroup(t *testing.T) {
+	in := models.StaffGroupInput{Name: "  Sales team ", Permissions: []string{"orders", "invoices", "orders"}}
+	if err := NormalizeGroup(&in); err != nil || in.Name != "Sales team" || len(in.Permissions) != 2 {
+		t.Fatalf("normalize group: %v %+v", err, in)
+	}
+	for _, bad := range []models.StaffGroupInput{
+		{Name: ""},
+		{Name: "X", Permissions: []string{"staff"}}, // managing staff isn't grantable
+		{Name: strings.Repeat("a", 61)},
+	} {
+		if err := NormalizeGroup(&bad); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%+v: want ErrInvalid, got %v", bad, err)
+		}
+	}
+}
+
+func TestEffectivePermissions(t *testing.T) {
+	admin := models.AdminUser{Role: "admin"}
+	effectivePermissions(&admin)
+	if len(admin.Permissions) != len(models.Permissions) {
+		t.Errorf("admins should get every service, got %v", admin.Permissions)
+	}
+	staff := models.AdminUser{Role: "staff", Permissions: []string{"orders", "retired-service"}}
+	effectivePermissions(&staff)
+	if len(staff.Permissions) != 1 || !staff.Can("orders") || staff.Can("settings") {
+		t.Errorf("staff permissions = %v", staff.Permissions)
+	}
+}

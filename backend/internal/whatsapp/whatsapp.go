@@ -105,11 +105,15 @@ func (n Notifier) Enabled() bool {
 // messages only deliver inside a 24h customer-service window; for
 // production use, switch this to an approved template message.
 func (n Notifier) NotifyNewOrder(ctx context.Context, o models.Order, adminURL string) {
+	n.NotifyText(ctx, fmt.Sprintf("🛍️ New %s order %s\n%s · %s\nTotal: %s\n%s",
+		o.Channel, o.Reference, o.CustomerName, o.Phone, Naira(o.Total), adminURL))
+}
+
+// NotifyText sends a plain-text alert to the store owner, if configured.
+func (n Notifier) NotifyText(ctx context.Context, text string) {
 	if !n.Enabled() {
 		return
 	}
-	text := fmt.Sprintf("🛍️ New %s order %s\n%s · %s\nTotal: %s\n%s",
-		o.Channel, o.Reference, o.CustomerName, o.Phone, Naira(o.Total), adminURL)
 	body, _ := json.Marshal(map[string]any{
 		"messaging_product": "whatsapp",
 		"to":                digits.ReplaceAllString(n.NotifyTo, ""),

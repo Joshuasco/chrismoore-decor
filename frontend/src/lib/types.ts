@@ -111,8 +111,15 @@ export type InventoryMovement = {
 };
 
 export type DashboardStats = {
+  /** Paid orders + paid invoices. */
   revenue: number;
   revenue_this_month: number;
+  invoice_revenue: number;
+  invoices_unpaid: number;
+  invoices_outstanding: number;
+  invoices_overdue: number;
+  invoices_overdue_amount: number;
+  recent_invoices: Invoice[];
   orders_total: number;
   orders_pending: number;
   orders_today: number;
@@ -122,7 +129,7 @@ export type DashboardStats = {
   inventory_value: number;
   subscribers: number;
   reviews_pending: number;
-  sales_by_day: { day: string; revenue: number; orders: number }[];
+  sales_by_day: { day: string; revenue: number; orders: number; invoice_revenue: number }[];
   channel_split: Record<Channel, number>;
   top_products: { product_id: string; name: string; image_url: string; units: number; revenue: number }[];
   recent_orders: Order[];
@@ -173,3 +180,74 @@ export type Review = {
 export type ReviewSummary = { average: number; count: number; breakdown: Record<string, number> };
 export type ReviewPage = { items: Review[]; total: number; page: number; limit: number; summary: ReviewSummary };
 export type ReviewInput = { name: string; email: string; rating: number; title: string; body: string; website?: string };
+
+// ---------- Admin accounts & roles ----------
+
+export type Permission = { key: string; label: string };
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: "admin" | "staff";
+  status: "pending" | "approved" | "disapproved";
+  group_id: string | null;
+  group_name: string;
+  permissions: string[];
+  status_changed_at: string | null;
+  last_login_at: string | null;
+  created_at: string;
+};
+
+export type Me = AdminUser & { pending_staff?: number };
+
+export type StaffGroup = {
+  id: string;
+  name: string;
+  description: string;
+  permissions: string[];
+  member_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+// ---------- Invoices ----------
+
+export type InvoiceItem = {
+  id: string;
+  product_id: string | null;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  amount: number;
+};
+
+export type Invoice = {
+  id?: string;
+  number: string;
+  token: string;
+  customer_name: string;
+  email: string;
+  phone: string;
+  address: string;
+  notes: string;
+  subtotal: number;
+  discount: number;
+  delivery_fee: number;
+  tax_rate: number;
+  tax: number;
+  total: number;
+  status: "unpaid" | "paid" | "void";
+  overdue: boolean;
+  due_date: string;
+  payment_provider: string;
+  paid_at: string | null;
+  created_by_name?: string;
+  created_at: string;
+  updated_at: string;
+  items: InvoiceItem[];
+};
+
+export type InvoiceDetail = { invoice: Invoice; invoice_url: string; whatsapp_url: string; email_url: string };
+
+export type InvoicePage = { items: Invoice[]; total: number; page: number; limit: number };

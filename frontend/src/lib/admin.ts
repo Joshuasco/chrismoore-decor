@@ -3,6 +3,24 @@
 import { ApiError, PUBLIC_API_URL } from "./api";
 
 const TOKEN_KEY = "cmd-admin-token";
+const NOTICE_KEY = "cmd-admin-notice";
+
+/** A message to show on the sign-in page, e.g. why the session ended. */
+export function setLoginNotice(msg: string) {
+  try {
+    sessionStorage.setItem(NOTICE_KEY, msg);
+  } catch {}
+}
+
+export function takeLoginNotice(): string {
+  try {
+    const msg = sessionStorage.getItem(NOTICE_KEY) || "";
+    sessionStorage.removeItem(NOTICE_KEY);
+    return msg;
+  } catch {
+    return "";
+  }
+}
 
 export function getToken() {
   try {
@@ -37,6 +55,9 @@ export async function adminFetch<T>(path: string, init: RequestInit = {}): Promi
   }
   if (res.status === 401 && !path.startsWith("/login")) {
     setToken(null);
+    // e.g. "Your access has been disapproved…" — shown on the sign-in page.
+    const body = await res.clone().json().catch(() => ({}));
+    if (body?.error) setLoginNotice(body.error);
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/admin/login")) {
       window.location.href = `/admin/login?next=${encodeURIComponent(window.location.pathname)}`;
     }

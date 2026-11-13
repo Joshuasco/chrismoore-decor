@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { CheckCircle2, Loader2, XCircle } from "lucide-react";
@@ -37,8 +38,6 @@ export default function SettingsPage() {
   const [data, setData] = useState<Resp | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
-  const [pw, setPw] = useState({ current_password: "", new_password: "" });
-  const [pwSaving, setPwSaving] = useState(false);
 
   const hydrate = (r: Resp) => {
     setData(r);
@@ -68,20 +67,6 @@ export default function SettingsPage() {
       toast.error((err as Error).message);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const changePw = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPwSaving(true);
-    try {
-      await adminFetch("/password", { method: "POST", body: JSON.stringify(pw) });
-      toast.success("Password updated");
-      setPw({ current_password: "", new_password: "" });
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setPwSaving(false);
     }
   };
 
@@ -131,21 +116,9 @@ export default function SettingsPage() {
             </ul>
             <p className="border-t border-line px-5 py-3 text-xs text-mist">API keys are set as environment variables on the Go server, never in the browser.</p>
           </Panel>
-          <form onSubmit={changePw}>
-            <Panel title="Change password">
-              <div className="space-y-4 p-5">
-                <div>
-                  <label className="label" htmlFor="cur">Current password</label>
-                  <input id="cur" type="password" required className="input" value={pw.current_password} onChange={(e) => setPw({ ...pw, current_password: e.target.value })} autoComplete="current-password" />
-                </div>
-                <div>
-                  <label className="label" htmlFor="new">New password</label>
-                  <input id="new" type="password" minLength={8} required className="input" value={pw.new_password} onChange={(e) => setPw({ ...pw, new_password: e.target.value })} autoComplete="new-password" />
-                </div>
-                <button className="btn-dark w-full" disabled={pwSaving}>{pwSaving && <Loader2 className="h-4 w-4 animate-spin" />} Update password</button>
-              </div>
-            </Panel>
-          </form>
+          <p className="text-xs text-mist">
+            To change your own password, go to <Link href="/admin/account" className="text-bronze hover:underline">My account</Link>.
+          </p>
         </div>
       </div>
     </>

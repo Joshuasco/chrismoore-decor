@@ -366,8 +366,9 @@ func (s *Store) CreatePayment(ctx context.Context, orderID, provider, reference 
 
 func (s *Store) GetPayment(ctx context.Context, reference string) (models.Payment, error) {
 	var p models.Payment
-	err := s.db.QueryRow(ctx, `select id, order_id, provider, reference, amount, status from payments where reference=$1`, reference).
-		Scan(&p.ID, &p.OrderID, &p.Provider, &p.Reference, &p.Amount, &p.Status)
+	err := s.db.QueryRow(ctx, `select id, coalesce(order_id::text, ''), coalesce(invoice_id::text, ''), provider, reference, amount, status
+		from payments where reference=$1`, reference).
+		Scan(&p.ID, &p.OrderID, &p.InvoiceID, &p.Provider, &p.Reference, &p.Amount, &p.Status)
 	return p, mapErr(err)
 }
 
@@ -379,7 +380,7 @@ func (s *Store) RecordPaymentResult(ctx context.Context, reference string, succe
 	newlyPaid := false
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var status, provider string
-		if err := tx.QueryRow(ctx, `select order_id, status, provider from payments where reference=$1 for update`, reference).
+		if err := tx.QueryRow(ctx, `select order_id, status, provider from payments where reference=$1 and order_id is not null for update`, reference).
 			Scan(&orderID, &status, &provider); err != nil {
 			return err
 		}

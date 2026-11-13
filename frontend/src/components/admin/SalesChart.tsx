@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { formatNaira } from "@/lib/format";
 
-type Point = { day: string; revenue: number; orders: number };
+type Point = { day: string; revenue: number; orders: number; invoice_revenue?: number };
 
 function niceMax(v: number) {
   if (v <= 0) return 100000; // ₦1,000 in kobo, so an empty chart still has an axis
@@ -20,7 +20,7 @@ const short = (kobo: number) => {
   return `₦${n}`;
 };
 
-/** Daily paid revenue, last 30 days. Single series → no legend; title names it. */
+/** Daily paid revenue (orders + invoices), last 30 days. Single series → no legend; title names it. */
 export default function SalesChart({ data }: { data: Point[] }) {
   const [hover, setHover] = useState<number | null>(null);
   const max = niceMax(Math.max(...data.map((d) => d.revenue), 0));
@@ -66,6 +66,7 @@ export default function SalesChart({ data }: { data: Point[] }) {
               <p className="text-white/60">{fmtDay(data[hover].day)}</p>
               <p className="font-semibold">{formatNaira(data[hover].revenue)}</p>
               <p className="text-white/60">{data[hover].orders} order{data[hover].orders === 1 ? "" : "s"}</p>
+              {!!data[hover].invoice_revenue && <p className="text-white/60">incl. {formatNaira(data[hover].invoice_revenue!)} from invoices</p>}
             </div>
           )}
         </div>

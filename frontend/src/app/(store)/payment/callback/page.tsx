@@ -7,5 +7,5 @@ export default async function PaymentCallbackPage({ searchParams }: { searchPara
   const sp = await searchParams;
   // Paystack appends ?reference=&trxref=, Flutterwave appends ?status=&tx_ref=&transaction_id=
   const reference = sp.reference || sp.trxref || sp.tx_ref || "";
-  return <PaymentCallback reference={reference} order={sp.order || ""} status={sp.status || ""} />;
+  return <PaymentCallback reference={reference} order={sp.order || ""} invoice={sp.invoice || ""} status={sp.status || ""} />;
 }
