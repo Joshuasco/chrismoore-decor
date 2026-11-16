@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"chrismoore-decor/backend/internal/ai"
 	"chrismoore-decor/backend/internal/cache"
 	"chrismoore-decor/backend/internal/config"
 	"chrismoore-decor/backend/internal/notify"
@@ -27,6 +28,7 @@ type Server struct {
 	paystack    *payments.Paystack
 	flutterwave *payments.Flutterwave
 	notifier    whatsapp.Notifier
+	assistant   *ai.Assistant
 	customers   *notify.Service
 	uploads     storage.Supabase
 }
@@ -48,6 +50,7 @@ func NewServer(cfg config.Config, st *store.Store, c *cache.Cache) *Server {
 			ServiceKey: cfg.SupabaseServiceRoleKey,
 			Bucket:     cfg.SupabaseBucket,
 		},
+		assistant: ai.New(cfg.GeminiAPIKey, cfg.GeminiModel, st, cfg.FrontendURL, cfg.WhatsAppVoiceReply),
 	}
 	s.customers = &notify.Service{
 		Recorder: st,
@@ -168,6 +171,8 @@ func (s *Server) Routes() http.Handler {
 		// Provider webhooks
 		r.Post("/webhooks/paystack", s.paystackWebhook)
 		r.Post("/webhooks/flutterwave", s.flutterwaveWebhook)
+		r.Get("/webhooks/whatsapp", s.verifyWhatsAppWebhook)
+		r.Post("/webhooks/whatsapp", s.handleWhatsAppWebhook)
 
 		// Admin dashboard. Every signed-in route checks that the account is
 		// approved; each section also needs its service (admins have all).

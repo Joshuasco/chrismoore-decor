@@ -6,9 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"regexp"
 	"strings"
@@ -111,31 +115,198 @@ func (n Notifier) NotifyNewOrder(ctx context.Context, o models.Order, adminURL s
 
 // NotifyText sends a plain-text alert to the store owner, if configured.
 func (n Notifier) NotifyText(ctx context.Context, text string) {
-	if !n.Enabled() {
-		return
+	_ = n.SendText(ctx, n.NotifyTo, text)
+}
+
+// SendText sends a free-form WhatsApp text message to any recipient.
+func (n Notifier) SendText(ctx context.Context, to, text string) error {
+	if n.Token == "" || n.PhoneNumberID == "" || to == "" {
+		return nil
 	}
 	body, _ := json.Marshal(map[string]any{
 		"messaging_product": "whatsapp",
-		"to":                digits.ReplaceAllString(n.NotifyTo, ""),
+		"recipient_type":    "individual",
+		"to":                digits.ReplaceAllString(to, ""),
 		"type":              "text",
 		"text":              map[string]string{"body": text},
 	})
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"https://graph.facebook.com/v21.0/"+n.PhoneNumberID+"/messages", bytes.NewReader(body))
 	if err != nil {
-		return
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+n.Token)
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("whatsapp notify: %v", err)
-		return
+		log.Printf("whatsapp send text: %v", err)
+		return err
 	}
-	res.Body.Close()
+	defer res.Body.Close()
 	if res.StatusCode >= 300 {
-		log.Printf("whatsapp notify: status %d", res.StatusCode)
+		raw, _ := io.ReadAll(res.Body)
+		log.Printf("whatsapp send text error: status %d: %s", res.StatusCode, string(raw))
+		return fmt.Errorf("whatsapp send status %d: %s", res.StatusCode, string(raw))
 	}
+	return nil
+}
+
+// SendAudio sends a voice note / audio message via media ID to any recipient.
+func (n Notifier) SendAudio(ctx context.Context, to, mediaID string) error {
+	if n.Token == "" || n.PhoneNumberID == "" || to == "" || mediaID == "" {
+		return nil
+	}
+	body, _ := json.Marshal(map[string]any{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"to":                digits.ReplaceAllString(to, ""),
+		"type":              "audio",
+		"audio":             map[string]string{"id": mediaID},
+	})
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://graph.facebook.com/v21.0/"+n.PhoneNumberID+"/messages", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+n.Token)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("whatsapp send audio: %v", err)
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		log.Printf("whatsapp send audio error: status %d: %s", res.StatusCode, string(raw))
+		return fmt.Errorf("whatsapp send audio status %d: %s", res.StatusCode, string(raw))
+	}
+	return nil
+}
+
+// UploadMedia uploads binary audio data to Meta and returns the media ID.
+func (n Notifier) UploadMedia(ctx context.Context, data []byte, mimeType, filename string) (string, error) {
+	if n.Token == "" || n.PhoneNumberID == "" {
+		return "", errors.New("whatsapp: token or phone number id not configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	if err := w.WriteField("messaging_product", "whatsapp"); err != nil {
+		return "", err
+	}
+	if err := w.WriteField("type", mimeType); err != nil {
+		return "", err
+	}
+
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, filename))
+	h.Set("Content-Type", mimeType)
+	part, err := w.CreatePart(h)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", err
+	}
+	if err := w.Close(); err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://graph.facebook.com/v21.0/"+n.PhoneNumberID+"/media", &buf)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+n.Token)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload media: %w", err)
+	}
+	defer res.Body.Close()
+
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return "", fmt.Errorf("upload media status %d: %s", res.StatusCode, string(raw))
+	}
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || out.ID == "" {
+		return "", fmt.Errorf("parse upload media response: %s", string(raw))
+	}
+	return out.ID, nil
+}
+
+// DownloadMedia fetches audio/media bytes and MIME type from Meta given a media ID.
+func (n Notifier) DownloadMedia(ctx context.Context, mediaID string) ([]byte, string, error) {
+	if n.Token == "" {
+		return nil, "", errors.New("whatsapp: token not configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Step 1: Retrieve media URL from Meta Graph API
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://graph.facebook.com/v21.0/"+mediaID, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+n.Token)
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("retrieve media url: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(res.Body)
+		return nil, "", fmt.Errorf("retrieve media url status %d: %s", res.StatusCode, string(b))
+	}
+
+	var mediaMeta struct {
+		URL      string `json:"url"`
+		MIMEType string `json:"mime_type"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&mediaMeta); err != nil {
+		return nil, "", fmt.Errorf("decode media metadata: %w", err)
+	}
+	if mediaMeta.URL == "" {
+		return nil, "", errors.New("empty media url returned by Meta")
+	}
+
+	// Step 2: Download raw binary data from returned URL
+	dlReq, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaMeta.URL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	dlReq.Header.Set("Authorization", "Bearer "+n.Token)
+	dlReq.Header.Set("User-Agent", "curl/7.68.0")
+
+	dlRes, err := http.DefaultClient.Do(dlReq)
+	if err != nil {
+		return nil, "", fmt.Errorf("download media content: %w", err)
+	}
+	defer dlRes.Body.Close()
+
+	if dlRes.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("download media status %d", dlRes.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(dlRes.Body, 25<<20)) // max 25MB
+	if err != nil {
+		return nil, "", fmt.Errorf("read media content: %w", err)
+	}
+
+	return data, mediaMeta.MIMEType, nil
 }

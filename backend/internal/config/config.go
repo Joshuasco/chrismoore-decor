@@ -28,10 +28,16 @@ type Config struct {
 	FlutterwaveSecretHash string
 
 	// Optional WhatsApp Cloud API credentials, used to ping the store
-	// owner when a new order is placed.
+	// owner when a new order is placed, and handle 2-way assistant conversations.
 	WhatsAppToken         string
 	WhatsAppPhoneNumberID string
 	WhatsAppNotifyTo      string
+	WhatsAppVerifyToken   string
+
+	// Google Gemini AI for multimodal WhatsApp assistant (text & voice/audio for visually impaired)
+	GeminiAPIKey       string
+	GeminiModel        string
+	WhatsAppVoiceReply bool
 
 	// Customer notifications. Each channel turns on when its keys are set.
 	// Email over SMTP:
@@ -79,6 +85,10 @@ func Load() Config {
 		WhatsAppToken:            env("WHATSAPP_TOKEN", ""),
 		WhatsAppPhoneNumberID:    env("WHATSAPP_PHONE_NUMBER_ID", ""),
 		WhatsAppNotifyTo:         env("WHATSAPP_NOTIFY_TO", ""),
+		WhatsAppVerifyToken:      env("WHATSAPP_VERIFY_TOKEN", ""),
+		GeminiAPIKey:             env("GEMINI_API_KEY", ""),
+		GeminiModel:              env("GEMINI_MODEL", "gemini-flash-lite-latest"),
+		WhatsAppVoiceReply:       boolEnv("WHATSAPP_VOICE_REPLY", false),
 		SMTPHost:                 env("SMTP_HOST", ""),
 		SMTPPort:                 intEnv("SMTP_PORT", 587),
 		SMTPUsername:             env("SMTP_USERNAME", ""),

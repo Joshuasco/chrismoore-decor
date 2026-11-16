@@ -442,6 +442,29 @@ paths:
         "200": { description: Received }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/webhooks/whatsapp:
+    get:
+      tags: [Webhooks]
+      summary: Meta WhatsApp webhook challenge verification
+      description: Responds to Meta's subscription challenge with the `hub.challenge` string when `hub.verify_token` matches `WHATSAPP_VERIFY_TOKEN`.
+      parameters:
+        - { name: hub.mode, in: query, required: true, schema: { type: string } }
+        - { name: hub.verify_token, in: query, required: true, schema: { type: string } }
+        - { name: hub.challenge, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Verified }
+        "403": { description: Forbidden }
+    post:
+      tags: [Webhooks]
+      summary: WhatsApp Cloud API incoming message event
+      description: Receives incoming messages (text and audio/voice notes) and triggers the Gemini AI assistant to respond.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Received }
+
   # ---------------------------------------------------------------- Admin · Auth
   /api/admin/login:
     post:

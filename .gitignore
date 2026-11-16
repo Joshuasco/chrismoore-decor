@@ -1,7 +1,5 @@
 <<<<<<< HEAD
 # env
-.env
-.env.local
 *.env.local
 
 # go
@@ -19,3 +17,5 @@ frontend/next-env.d.ts
 .DS_Store
 
 
+config.bat
+node_modules
