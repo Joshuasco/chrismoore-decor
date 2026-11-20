@@ -22,6 +22,7 @@ export type Product = {
   description: string;
   price: number;
   compare_at_price: number | null;
+  cost_price: number;
   stock: number;
   low_stock_threshold: number;
   images: string[];
@@ -183,7 +184,13 @@ export type ReviewInput = { name: string; email: string; rating: number; title: 
 
 // ---------- Admin accounts & roles ----------
 
-export type Permission = { key: string; label: string };
+export type Permission = {
+  key: string;
+  label: string;
+  resource?: string;
+  action?: string;
+  description?: string;
+};
 
 export type AdminUser = {
   id: string;
@@ -193,6 +200,8 @@ export type AdminUser = {
   status: "pending" | "approved" | "disapproved";
   group_id: string | null;
   group_name: string;
+  group_permissions?: string[];
+  direct_permissions?: string[];
   permissions: string[];
   status_changed_at: string | null;
   last_login_at: string | null;
@@ -251,3 +260,132 @@ export type Invoice = {
 export type InvoiceDetail = { invoice: Invoice; invoice_url: string; whatsapp_url: string; email_url: string };
 
 export type InvoicePage = { items: Invoice[]; total: number; page: number; limit: number };
+
+// ---------- Procurement ----------
+
+export type Supplier = {
+  id: string;
+  name: string;
+  contact_person: string;
+  email: string;
+  phone: string;
+  address: string;
+  city: string;
+  country: string;
+  payment_terms: string;
+  bank_details: string;
+  lead_time_days: number;
+  notes: string;
+  is_active: boolean;
+  po_count?: number;
+  total_spent?: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SupplierInput = Omit<Supplier, "id" | "po_count" | "total_spent" | "created_at" | "updated_at">;
+
+export type SupplierPage = { items: Supplier[]; total: number; page: number; limit: number };
+
+export type PurchaseOrderItem = {
+  id: string;
+  purchase_order_id: string;
+  product_id: string | null;
+  product_name: string;
+  sku: string;
+  quantity_ordered: number;
+  quantity_received: number;
+  unit_cost: number;
+  total_cost: number;
+};
+
+export type PurchaseOrderItemInput = {
+  product_id?: string | null;
+  product_name: string;
+  sku?: string;
+  quantity_ordered: number;
+  unit_cost: number;
+};
+
+export type ProcurementPayment = {
+  id: string;
+  purchase_order_id: string;
+  amount: number;
+  payment_method: string;
+  reference: string;
+  paid_at: string;
+  created_by_name: string;
+  notes: string;
+};
+
+export type ProcurementPaymentInput = {
+  amount: number;
+  payment_method: string;
+  reference?: string;
+  notes?: string;
+};
+
+export type PurchaseOrder = {
+  id: string;
+  po_number: string;
+  supplier_id: string;
+  supplier_name: string;
+  status: "draft" | "ordered" | "partially_received" | "received" | "cancelled";
+  payment_status: "unpaid" | "partially_paid" | "paid";
+  subtotal: number;
+  shipping_cost: number;
+  customs_duty: number;
+  other_costs: number;
+  tax_amount: number;
+  total_cost: number;
+  amount_paid: number;
+  order_date: string;
+  expected_delivery_date: string;
+  received_at: string | null;
+  tracking_number: string;
+  shipping_carrier: string;
+  created_by: string | null;
+  created_by_name: string;
+  notes: string;
+  items: PurchaseOrderItem[];
+  payments?: ProcurementPayment[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type PurchaseOrderInput = {
+  supplier_id: string;
+  order_date?: string;
+  expected_delivery_date?: string;
+  tracking_number?: string;
+  shipping_carrier?: string;
+  shipping_cost?: number;
+  customs_duty?: number;
+  other_costs?: number;
+  tax_amount?: number;
+  notes?: string;
+  items: PurchaseOrderItemInput[];
+};
+
+export type PurchaseOrderPage = { items: PurchaseOrder[]; total: number; page: number; limit: number };
+
+export type ReceiveGoodsItem = {
+  item_id: string;
+  quantity_received: number;
+};
+
+export type ReceiveGoodsInput = {
+  items: ReceiveGoodsItem[];
+  update_cost_price?: boolean;
+  notes?: string;
+};
+
+export type ProcurementStats = {
+  total_spend: number;
+  spend_this_month: number;
+  pending_pos_count: number;
+  unpaid_supplier_amount: number;
+  active_suppliers_count: number;
+  total_inventory_cost: number;
+  total_inventory_retail: number;
+};

@@ -40,6 +40,8 @@ tags:
   - name: Admin · Content
   - name: Admin · Store
   - name: Admin · Invoices
+  - name: Admin · Procurement
+    description: Suppliers, purchase orders, landed costs, goods receipt and payments
   - name: Admin · Staff
     description: Staff approval and groups (admins only)
 
@@ -1365,6 +1367,266 @@ paths:
                     created_at: { type: string, example: "2026-11-12 10:30" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  # ---------------------------------------------------------------- Admin · Procurement
+  /api/admin/procurement/stats:
+    get:
+      tags: [Admin · Procurement]
+      summary: Procurement and inventory cost statistics
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Procurement stats
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProcurementStats" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/admin/suppliers:
+    get:
+      tags: [Admin · Procurement]
+      summary: List suppliers
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: "Search name, contact person, email or phone" }
+        - { name: is_active, in: query, schema: { type: boolean } }
+        - { $ref: "#/components/parameters/Page" }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: Paginated suppliers
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Admin · Procurement]
+      summary: Create a supplier
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SupplierInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Supplier" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/admin/suppliers/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [Admin · Procurement]
+      summary: Get a supplier
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Supplier details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Supplier" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Admin · Procurement]
+      summary: Update a supplier
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SupplierInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Supplier" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Admin · Procurement]
+      summary: Delete a supplier
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/purchase-orders:
+    get:
+      tags: [Admin · Procurement]
+      summary: List purchase orders
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: supplier_id, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string, enum: [draft, ordered, partially_received, received, cancelled] } }
+        - { name: payment_status, in: query, schema: { type: string, enum: [unpaid, partially_paid, paid] } }
+        - { name: q, in: query, schema: { type: string }, description: "Search PO number, supplier, tracking number or notes" }
+        - { $ref: "#/components/parameters/Page" }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: Paginated purchase orders
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrderPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Admin · Procurement]
+      summary: Create a purchase order
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PurchaseOrderInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrder" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/admin/purchase-orders/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [Admin · Procurement]
+      summary: Get purchase order details
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Purchase order with items and payment history
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrder" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Admin · Procurement]
+      summary: Update a purchase order
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PurchaseOrderInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrder" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Admin · Procurement]
+      summary: Delete a draft or cancelled purchase order
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/purchase-orders/{id}/status:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [Admin · Procurement]
+      summary: Update purchase order status
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [draft, ordered, partially_received, received, cancelled] }
+      responses:
+        "200":
+          description: Status updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrder" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/purchase-orders/{id}/receive:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    post:
+      tags: [Admin · Procurement]
+      summary: Receive goods for a purchase order
+      description: Increases inventory stock and optionally updates product cost price.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReceiveGoodsInput" }
+      responses:
+        "200":
+          description: Goods received and stock updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrder" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/purchase-orders/{id}/payments:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    post:
+      tags: [Admin · Procurement]
+      summary: Record payment to supplier for purchase order
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProcurementPaymentInput" }
+      responses:
+        "200":
+          description: Payment recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseOrder" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1518,6 +1780,7 @@ components:
         description: { type: string }
         price: { $ref: "#/components/schemas/Kobo" }
         compare_at_price: { type: integer, format: int64, nullable: true, description: Original price in kobo (shows a sale badge) }
+        cost_price: { $ref: "#/components/schemas/Kobo", description: Cost price in kobo }
         stock: { type: integer }
         low_stock_threshold: { type: integer }
         images: { type: array, items: { type: string } }
@@ -1544,6 +1807,7 @@ components:
         description: { type: string }
         price: { $ref: "#/components/schemas/Kobo" }
         compare_at_price: { type: integer, format: int64, nullable: true }
+        cost_price: { $ref: "#/components/schemas/Kobo", description: Cost price in kobo }
         stock: { type: integer, minimum: 0 }
         low_stock_threshold: { type: integer, default: 5 }
         images: { type: array, items: { type: string }, description: "https:// URLs; first is the main image" }
@@ -1691,6 +1955,8 @@ components:
         status: { type: string, enum: [pending, approved, disapproved] }
         group_id: { type: string, format: uuid, nullable: true }
         group_name: { type: string }
+        group_permissions: { type: array, items: { type: string } }
+        direct_permissions: { type: array, items: { type: string } }
         permissions: { type: array, items: { type: string }, description: "Effective services (admins: all)" }
         status_changed_at: { type: string, format: date-time, nullable: true }
         last_login_at: { type: string, format: date-time, nullable: true }
@@ -1698,8 +1964,11 @@ components:
     Permission:
       type: object
       properties:
-        key: { type: string, enum: [dashboard, orders, invoices, products, inventory, reviews, blog, subscribers, settings] }
+        key: { type: string }
         label: { type: string }
+        resource: { type: string }
+        action: { type: string }
+        description: { type: string }
     StaffGroup:
       type: object
       properties:
@@ -1724,6 +1993,7 @@ components:
         status: { type: string, enum: [approved, disapproved, pending] }
         role: { type: string, enum: [admin, staff] }
         group_id: { type: string, description: "Group ID, or empty to remove from the group" }
+        direct_permissions: { type: array, items: { type: string }, description: "Direct permissions assigned specifically to the user" }
     InvoiceItem:
       type: object
       properties:
@@ -1946,3 +2216,172 @@ components:
         page: { type: integer }
         limit: { type: integer }
         summary: { $ref: "#/components/schemas/ReviewSummary" }
+
+    ProcurementStats:
+      type: object
+      properties:
+        total_spend: { $ref: "#/components/schemas/Kobo" }
+        spend_this_month: { $ref: "#/components/schemas/Kobo" }
+        pending_pos_count: { type: integer }
+        unpaid_supplier_amount: { $ref: "#/components/schemas/Kobo" }
+        active_suppliers_count: { type: integer }
+        total_inventory_cost: { $ref: "#/components/schemas/Kobo" }
+        total_inventory_retail: { $ref: "#/components/schemas/Kobo" }
+
+    Supplier:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        contact_person: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        address: { type: string }
+        city: { type: string }
+        country: { type: string }
+        payment_terms: { type: string }
+        bank_details: { type: string }
+        lead_time_days: { type: integer }
+        notes: { type: string }
+        is_active: { type: boolean }
+        po_count: { type: integer }
+        total_spent: { $ref: "#/components/schemas/Kobo" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    SupplierInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        contact_person: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        address: { type: string }
+        city: { type: string }
+        country: { type: string }
+        payment_terms: { type: string }
+        bank_details: { type: string }
+        lead_time_days: { type: integer }
+        notes: { type: string }
+        is_active: { type: boolean }
+
+    SupplierPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Supplier" } }
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+
+    PurchaseOrderItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        purchase_order_id: { type: string, format: uuid }
+        product_id: { type: string, format: uuid, nullable: true }
+        product_name: { type: string }
+        sku: { type: string }
+        quantity_ordered: { type: integer }
+        quantity_received: { type: integer }
+        unit_cost: { $ref: "#/components/schemas/Kobo" }
+        total_cost: { $ref: "#/components/schemas/Kobo" }
+
+    PurchaseOrderItemInput:
+      type: object
+      required: [product_name, quantity_ordered, unit_cost]
+      properties:
+        product_id: { type: string, format: uuid, nullable: true }
+        product_name: { type: string }
+        sku: { type: string }
+        quantity_ordered: { type: integer, minimum: 1 }
+        unit_cost: { $ref: "#/components/schemas/Kobo" }
+
+    ProcurementPayment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        purchase_order_id: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/Kobo" }
+        payment_method: { type: string }
+        reference: { type: string }
+        paid_at: { type: string, format: date-time }
+        created_by_name: { type: string }
+        notes: { type: string }
+
+    ProcurementPaymentInput:
+      type: object
+      required: [amount]
+      properties:
+        amount: { $ref: "#/components/schemas/Kobo" }
+        payment_method: { type: string }
+        reference: { type: string }
+        notes: { type: string }
+
+    PurchaseOrder:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        po_number: { type: string }
+        supplier_id: { type: string, format: uuid }
+        supplier_name: { type: string }
+        status: { type: string, enum: [draft, ordered, partially_received, received, cancelled] }
+        payment_status: { type: string, enum: [unpaid, partially_paid, paid] }
+        subtotal: { $ref: "#/components/schemas/Kobo" }
+        shipping_cost: { $ref: "#/components/schemas/Kobo" }
+        customs_duty: { $ref: "#/components/schemas/Kobo" }
+        other_costs: { $ref: "#/components/schemas/Kobo" }
+        tax_amount: { $ref: "#/components/schemas/Kobo" }
+        total_cost: { $ref: "#/components/schemas/Kobo" }
+        amount_paid: { $ref: "#/components/schemas/Kobo" }
+        order_date: { type: string, example: "2026-11-20" }
+        expected_delivery_date: { type: string, example: "2026-11-27" }
+        received_at: { type: string, format: date-time, nullable: true }
+        tracking_number: { type: string }
+        shipping_carrier: { type: string }
+        created_by: { type: string, format: uuid, nullable: true }
+        created_by_name: { type: string }
+        notes: { type: string }
+        items: { type: array, items: { $ref: "#/components/schemas/PurchaseOrderItem" } }
+        payments: { type: array, items: { $ref: "#/components/schemas/ProcurementPayment" } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PurchaseOrderInput:
+      type: object
+      required: [supplier_id, items]
+      properties:
+        supplier_id: { type: string, format: uuid }
+        order_date: { type: string }
+        expected_delivery_date: { type: string }
+        tracking_number: { type: string }
+        shipping_carrier: { type: string }
+        shipping_cost: { $ref: "#/components/schemas/Kobo" }
+        customs_duty: { $ref: "#/components/schemas/Kobo" }
+        other_costs: { $ref: "#/components/schemas/Kobo" }
+        tax_amount: { $ref: "#/components/schemas/Kobo" }
+        notes: { type: string }
+        items: { type: array, items: { $ref: "#/components/schemas/PurchaseOrderItemInput" } }
+
+    PurchaseOrderPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/PurchaseOrder" } }
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+
+    ReceiveGoodsItem:
+      type: object
+      required: [item_id, quantity_received]
+      properties:
+        item_id: { type: string, format: uuid }
+        quantity_received: { type: integer, minimum: 1 }
+
+    ReceiveGoodsInput:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ReceiveGoodsItem" } }
+        update_cost_price: { type: boolean }
+        notes: { type: string }

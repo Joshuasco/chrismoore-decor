@@ -11,14 +11,14 @@ import (
 )
 
 const productColumns = `p.id, p.category_id, coalesce(c.name,''), coalesce(c.slug,''), p.name, p.slug, p.sku,
-	p.short_description, p.description, p.price, p.compare_at_price, p.stock, p.low_stock_threshold,
+	p.short_description, p.description, p.price, p.compare_at_price, coalesce(p.cost_price, 0), p.stock, p.low_stock_threshold,
 	p.images, p.colors, p.sizes, p.material, p.badge, p.is_featured, p.is_active, p.rating::float8,
 	p.review_count, p.created_at, p.updated_at`
 
 func scanProduct(row pgx.Row) (models.Product, error) {
 	var p models.Product
 	err := row.Scan(&p.ID, &p.CategoryID, &p.CategoryName, &p.CategorySlug, &p.Name, &p.Slug, &p.SKU,
-		&p.ShortDescription, &p.Description, &p.Price, &p.CompareAtPrice, &p.Stock, &p.LowStockThreshold,
+		&p.ShortDescription, &p.Description, &p.Price, &p.CompareAtPrice, &p.CostPrice, &p.Stock, &p.LowStockThreshold,
 		&p.Images, &p.Colors, &p.Sizes, &p.Material, &p.Badge, &p.IsFeatured, &p.IsActive, &p.Rating,
 		&p.ReviewCount, &p.CreatedAt, &p.UpdatedAt)
 	p.Images, p.Colors, p.Sizes = nonNil(p.Images), nonNil(p.Colors), nonNil(p.Sizes)
@@ -200,7 +200,7 @@ func (s *Store) RelatedProducts(ctx context.Context, p models.Product, limit int
 func normalizeProduct(in *models.ProductInput) error {
 	in.Name = strings.TrimSpace(in.Name)
 	in.SKU = strings.TrimSpace(in.SKU)
-	if in.Name == "" || in.SKU == "" || in.Price < 0 || in.Stock < 0 {
+	if in.Name == "" || in.SKU == "" || in.Price < 0 || in.CostPrice < 0 || in.Stock < 0 {
 		return ErrInvalid
 	}
 	if in.Slug == "" {
@@ -234,10 +234,10 @@ func (s *Store) CreateProduct(ctx context.Context, in models.ProductInput, actor
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
 			insert into products (category_id, name, slug, sku, short_description, description, price, compare_at_price,
-				stock, low_stock_threshold, images, colors, sizes, material, badge, is_featured, is_active)
-			values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) returning id`,
+				cost_price, stock, low_stock_threshold, images, colors, sizes, material, badge, is_featured, is_active)
+			values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) returning id`,
 			in.CategoryID, in.Name, in.Slug, in.SKU, in.ShortDescription, in.Description, in.Price, in.CompareAtPrice,
-			in.Stock, in.LowStockThreshold, in.Images, in.Colors, in.Sizes, in.Material, in.Badge, in.IsFeatured,
+			in.CostPrice, in.Stock, in.LowStockThreshold, in.Images, in.Colors, in.Sizes, in.Material, in.Badge, in.IsFeatured,
 			in.IsActive).Scan(&id)
 		if err != nil {
 			return err
@@ -266,11 +266,11 @@ func (s *Store) UpdateProduct(ctx context.Context, id string, in models.ProductI
 		}
 		_, err := tx.Exec(ctx, `
 			update products set category_id=$2, name=$3, slug=$4, sku=$5, short_description=$6, description=$7,
-				price=$8, compare_at_price=$9, stock=$10, low_stock_threshold=$11, images=$12, colors=$13, sizes=$14,
-				material=$15, badge=$16, is_featured=$17, is_active=$18, updated_at=now()
+				price=$8, compare_at_price=$9, cost_price=$10, stock=$11, low_stock_threshold=$12, images=$13, colors=$14, sizes=$15,
+				material=$16, badge=$17, is_featured=$18, is_active=$19, updated_at=now()
 			where id=$1`,
 			id, in.CategoryID, in.Name, in.Slug, in.SKU, in.ShortDescription, in.Description, in.Price,
-			in.CompareAtPrice, in.Stock, in.LowStockThreshold, in.Images, in.Colors, in.Sizes, in.Material,
+			in.CompareAtPrice, in.CostPrice, in.Stock, in.LowStockThreshold, in.Images, in.Colors, in.Sizes, in.Material,
 			in.Badge, in.IsFeatured, in.IsActive)
 		if err != nil {
 			return err
@@ -331,11 +331,12 @@ func (s *Store) AdjustStock(ctx context.Context, id string, change int, reason, 
 func (s *Store) ListMovements(ctx context.Context, productID string, limit int) ([]models.InventoryMovement, error) {
 	_, limit = clampPage(1, limit, 50, 500)
 	rows, err := s.db.Query(ctx, `
-		select m.id, m.product_id, p.name, m.change, m.reason, coalesce(o.reference, iv.number), m.actor, m.created_at
+		select m.id, m.product_id, p.name, m.change, m.reason, coalesce(o.reference, iv.number, po.po_number), m.actor, m.created_at
 		from inventory_movements m
 		join products p on p.id = m.product_id
 		left join orders o on o.id = m.order_id
 		left join invoices iv on iv.id = m.invoice_id
+		left join purchase_orders po on po.id = m.purchase_order_id
 		where ($1 = '' or m.product_id::text = $1)
 		order by m.created_at desc limit $2`, productID, limit)
 	if err != nil {

@@ -47,6 +47,10 @@ export const STATUS_LABEL: Record<string, string> = {
   void: "Void",
   overdue: "Overdue",
   manual: "Marked paid",
+  ordered: "Ordered",
+  partially_received: "Partially Received",
+  received: "Received",
+  partially_paid: "Partially Paid",
   admin: "Admin",
   staff: "Staff",
 };

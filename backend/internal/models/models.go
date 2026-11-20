@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // All monetary amounts are integers in kobo.
 
@@ -27,6 +30,7 @@ type Product struct {
 	Description       string    `json:"description"`
 	Price             int64     `json:"price"`
 	CompareAtPrice    *int64    `json:"compare_at_price"`
+	CostPrice         int64     `json:"cost_price"`
 	Stock             int       `json:"stock"`
 	LowStockThreshold int       `json:"low_stock_threshold"`
 	Images            []string  `json:"images"`
@@ -51,6 +55,7 @@ type ProductInput struct {
 	Description       string   `json:"description"`
 	Price             int64    `json:"price"`
 	CompareAtPrice    *int64   `json:"compare_at_price"`
+	CostPrice         int64    `json:"cost_price"`
 	Stock             int      `json:"stock"`
 	LowStockThreshold int      `json:"low_stock_threshold"`
 	Images            []string `json:"images"`
@@ -191,46 +196,118 @@ type AdminUser struct {
 	Role string `json:"role"`
 	// Status is "pending" (awaiting approval), "approved" or "disapproved".
 	Status          string     `json:"status"`
-	GroupID         *string    `json:"group_id"`
-	GroupName       string     `json:"group_name"`
-	Permissions     []string   `json:"permissions"` // effective services this user can access
-	PasswordHash    string     `json:"-"`
-	StatusChangedAt *time.Time `json:"status_changed_at"`
-	LastLoginAt     *time.Time `json:"last_login_at"`
-	CreatedAt       time.Time  `json:"created_at"`
+	GroupID           *string    `json:"group_id"`
+	GroupName         string     `json:"group_name"`
+	GroupPermissions  []string   `json:"group_permissions,omitempty"`
+	DirectPermissions []string   `json:"direct_permissions"`
+	Permissions       []string   `json:"permissions"` // effective services and actions this user can access
+	PasswordHash      string     `json:"-"`
+	StatusChangedAt   *time.Time `json:"status_changed_at"`
+	LastLoginAt       *time.Time `json:"last_login_at"`
+	CreatedAt         time.Time  `json:"created_at"`
 }
 
-// Can reports whether the user may use a dashboard service.
+// Can reports whether the user may use a dashboard service or specific action.
 func (u AdminUser) Can(perm string) bool {
 	if u.Role == "admin" {
 		return true
 	}
+	parts := strings.Split(perm, ":")
+	resource := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = strings.Join(parts[1:], ":")
+	}
+
 	for _, p := range u.Permissions {
-		if p == perm {
+		if p == perm || p == "*" {
+			return true
+		}
+		// Resource wildcard: "products:*"
+		if p == resource+":*" {
+			// Cost price access requires explicit permission unless granted legacy coarse
+			if strings.HasPrefix(action, "cost_price") && !strings.Contains(p, "cost_price") {
+				continue
+			}
+			return true
+		}
+		// Legacy coarse permission: "products" satisfies standard CRUD and actions
+		if p == resource {
 			return true
 		}
 	}
 	return false
 }
 
-// Permission is a dashboard service that can be granted to a staff group.
+// Permission is a grantable service or granular capability.
 type Permission struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Resource    string `json:"resource"`
+	Action      string `json:"action,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
-// Permissions lists every grantable service. Managing staff and groups is
+// Permissions lists every grantable service and action. Managing staff and groups is
 // reserved for admins and isn't grantable.
 var Permissions = []Permission{
-	{"dashboard", "Overview & sales stats"},
-	{"orders", "Orders"},
-	{"invoices", "Invoices"},
-	{"products", "Products & categories"},
-	{"inventory", "Inventory"},
-	{"reviews", "Reviews"},
-	{"blog", "Blog"},
-	{"subscribers", "Subscribers"},
-	{"settings", "Store settings"},
+	// Legacy / High-level services
+	{"dashboard", "Overview & sales stats", "dashboard", "*", "Full access to dashboard"},
+	{"orders", "Orders (Full access)", "orders", "*", "Full access to orders"},
+	{"invoices", "Invoices (Full access)", "invoices", "*", "Full access to invoices"},
+	{"products", "Products (Full access)", "products", "*", "Full access to products and categories"},
+	{"inventory", "Inventory (Full access)", "inventory", "*", "Full access to inventory"},
+	{"procurement", "Procurement (Full access)", "procurement", "*", "Full access to procurement and suppliers"},
+	{"reviews", "Reviews (Full access)", "reviews", "*", "Full access to customer reviews"},
+	{"blog", "Blog (Full access)", "blog", "*", "Full access to articles"},
+	{"subscribers", "Subscribers (Full access)", "subscribers", "*", "Full access to subscribers"},
+	{"settings", "Store settings (Full access)", "settings", "*", "Full access to settings"},
+
+	// Granular CRUD and field-level permissions
+	{"dashboard:read", "View Overview & Stats", "dashboard", "read", "View dashboard summary charts and revenue metrics"},
+
+	{"products:read", "View Products & Categories", "products", "read", "Browse catalog products and categories"},
+	{"products:create", "Create Products", "products", "create", "Add new products and product categories"},
+	{"products:update", "Edit Products", "products", "update", "Modify product details, descriptions, and categories"},
+	{"products:delete", "Delete Products", "products", "delete", "Remove products or product categories from catalog"},
+	{"products:cost_price:read", "View Cost Price & Margins", "products", "cost_price:read", "View wholesale cost prices, unit profit, and margin percentages"},
+	{"products:cost_price:update", "Edit Cost Price", "products", "cost_price:update", "Update product wholesale cost prices"},
+	{"products:pricing:update", "Edit Selling Price", "products", "pricing:update", "Change selling prices and compare-at discounted prices"},
+
+	{"inventory:read", "View Stock & Movements", "inventory", "read", "Inspect stock levels and stock movement logs"},
+	{"inventory:update", "Adjust Stock", "inventory", "update", "Increase, decrease, or reconcile product inventory stock"},
+
+	{"orders:read", "View Orders", "orders", "read", "Inspect customer orders and shipping details"},
+	{"orders:create", "Create Orders", "orders", "create", "Place customer orders directly in the admin portal"},
+	{"orders:update", "Update Orders", "orders", "update", "Change order status, tracking information, and verify payments"},
+	{"orders:delete", "Delete Orders", "orders", "delete", "Cancel and delete customer orders"},
+
+	{"invoices:read", "View Invoices", "invoices", "read", "Inspect generated customer invoices"},
+	{"invoices:create", "Create Invoices", "invoices", "create", "Draft and send new invoices to customers"},
+	{"invoices:update", "Edit Invoices", "invoices", "update", "Edit invoice line items, delivery fees, and statuses"},
+	{"invoices:delete", "Delete Invoices", "invoices", "delete", "Void and delete customer invoices"},
+
+	{"procurement:read", "View Procurement & Suppliers", "procurement", "read", "Browse suppliers and purchase orders"},
+	{"procurement:create", "Create Purchase Orders & Suppliers", "procurement", "create", "Draft purchase orders and register new suppliers"},
+	{"procurement:update", "Edit Purchase Orders & Suppliers", "procurement", "update", "Modify purchase order headers, line items, and supplier profiles"},
+	{"procurement:delete", "Delete Purchase Orders & Suppliers", "procurement", "delete", "Delete unfulfilled purchase orders and inactive suppliers"},
+	{"procurement:receive", "Receive Goods into Stock", "procurement", "receive", "Inspect and record incoming shipments into active inventory"},
+	{"procurement:pay", "Record Supplier Payments", "procurement", "pay", "Log payments and wire transfers to suppliers"},
+
+	{"blog:read", "View Blog Posts", "blog", "read", "Read drafts and published blog articles"},
+	{"blog:create", "Create Blog Posts", "blog", "create", "Write and publish new blog articles"},
+	{"blog:update", "Edit Blog Posts", "blog", "update", "Edit blog content and cover images"},
+	{"blog:delete", "Delete Blog Posts", "blog", "delete", "Delete blog posts"},
+
+	{"reviews:read", "View Reviews", "reviews", "read", "Browse customer feedback and reviews"},
+	{"reviews:update", "Moderate Reviews", "reviews", "update", "Approve, feature, or hide customer reviews"},
+	{"reviews:delete", "Delete Reviews", "reviews", "delete", "Permanently remove customer reviews"},
+
+	{"subscribers:read", "View Subscribers", "subscribers", "read", "View and export newsletter subscriber list"},
+	{"subscribers:delete", "Delete Subscribers", "subscribers", "delete", "Remove subscribers from newsletter list"},
+
+	{"settings:read", "View Store Settings", "settings", "read", "Inspect store contact and shipping configurations"},
+	{"settings:update", "Update Store Settings", "settings", "update", "Save changes to store settings, policies, and fees"},
 }
 
 // PermissionKeys returns the keys of Permissions.
@@ -263,9 +340,10 @@ type StaffGroupInput struct {
 // StaffUpdate changes a user's access. Nil fields are left unchanged; an
 // empty GroupID removes the user from their group.
 type StaffUpdate struct {
-	Status  *string `json:"status"`
-	Role    *string `json:"role"`
-	GroupID *string `json:"group_id"`
+	Status            *string   `json:"status"`
+	Role              *string   `json:"role"`
+	GroupID           *string   `json:"group_id"`
+	DirectPermissions *[]string `json:"direct_permissions"`
 }
 
 // ---------- Invoices ----------
@@ -512,4 +590,172 @@ type Notification struct {
 	Attempts  int       `json:"attempts"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ---------- Procurement Models ----------
+
+type Supplier struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	ContactPerson string    `json:"contact_person"`
+	Email         string    `json:"email"`
+	Phone         string    `json:"phone"`
+	Address       string    `json:"address"`
+	City          string    `json:"city"`
+	Country       string    `json:"country"`
+	PaymentTerms  string    `json:"payment_terms"`
+	BankDetails   string    `json:"bank_details"`
+	LeadTimeDays  int       `json:"lead_time_days"`
+	Notes         string    `json:"notes"`
+	IsActive      bool      `json:"is_active"`
+	POCount       int       `json:"po_count,omitempty"`
+	TotalSpent    int64     `json:"total_spent,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type SupplierInput struct {
+	Name          string `json:"name"`
+	ContactPerson string `json:"contact_person"`
+	Email         string `json:"email"`
+	Phone         string `json:"phone"`
+	Address       string `json:"address"`
+	City          string `json:"city"`
+	Country       string `json:"country"`
+	PaymentTerms  string `json:"payment_terms"`
+	BankDetails   string `json:"bank_details"`
+	LeadTimeDays  int    `json:"lead_time_days"`
+	Notes         string `json:"notes"`
+	IsActive      bool   `json:"is_active"`
+}
+
+type SupplierFilter struct {
+	Query    string
+	IsActive *bool
+	Page     int
+	Limit    int
+}
+
+type SupplierPage struct {
+	Items []Supplier `json:"items"`
+	Total int        `json:"total"`
+	Page  int        `json:"page"`
+	Limit int        `json:"limit"`
+}
+
+type PurchaseOrderItem struct {
+	ID               string  `json:"id"`
+	PurchaseOrderID  string  `json:"purchase_order_id"`
+	ProductID        *string `json:"product_id"`
+	ProductName      string  `json:"product_name"`
+	SKU              string  `json:"sku"`
+	QuantityOrdered  int     `json:"quantity_ordered"`
+	QuantityReceived int     `json:"quantity_received"`
+	UnitCost         int64   `json:"unit_cost"`
+	TotalCost        int64   `json:"total_cost"`
+}
+
+type PurchaseOrderItemInput struct {
+	ProductID       *string `json:"product_id"`
+	ProductName     string  `json:"product_name"`
+	SKU             string  `json:"sku"`
+	QuantityOrdered int     `json:"quantity_ordered"`
+	UnitCost        int64   `json:"unit_cost"`
+}
+
+type PurchaseOrder struct {
+	ID                   string              `json:"id"`
+	PONumber             string              `json:"po_number"`
+	SupplierID           string              `json:"supplier_id"`
+	SupplierName         string              `json:"supplier_name"`
+	Status               string              `json:"status"` // draft, ordered, partially_received, received, cancelled
+	PaymentStatus        string              `json:"payment_status"` // unpaid, partially_paid, paid
+	Subtotal             int64               `json:"subtotal"`
+	ShippingCost         int64               `json:"shipping_cost"`
+	CustomsDuty          int64               `json:"customs_duty"`
+	OtherCosts           int64               `json:"other_costs"`
+	TaxAmount            int64               `json:"tax_amount"`
+	TotalCost            int64               `json:"total_cost"`
+	AmountPaid           int64               `json:"amount_paid"`
+	OrderDate            string              `json:"order_date"`
+	ExpectedDeliveryDate string              `json:"expected_delivery_date"`
+	ReceivedAt           *time.Time          `json:"received_at"`
+	TrackingNumber       string              `json:"tracking_number"`
+	ShippingCarrier      string              `json:"shipping_carrier"`
+	CreatedBy            *string             `json:"created_by"`
+	CreatedByName        string              `json:"created_by_name"`
+	Notes                string              `json:"notes"`
+	Items                []PurchaseOrderItem `json:"items"`
+	Payments             []ProcurementPayment`json:"payments,omitempty"`
+	CreatedAt            time.Time           `json:"created_at"`
+	UpdatedAt            time.Time           `json:"updated_at"`
+}
+
+type PurchaseOrderInput struct {
+	SupplierID           string                   `json:"supplier_id"`
+	OrderDate            string                   `json:"order_date"`
+	ExpectedDeliveryDate string                   `json:"expected_delivery_date"`
+	TrackingNumber       string                   `json:"tracking_number"`
+	ShippingCarrier      string                   `json:"shipping_carrier"`
+	ShippingCost         int64                    `json:"shipping_cost"`
+	CustomsDuty          int64                    `json:"customs_duty"`
+	OtherCosts           int64                    `json:"other_costs"`
+	TaxAmount            int64                    `json:"tax_amount"`
+	Notes                string                   `json:"notes"`
+	Items                []PurchaseOrderItemInput `json:"items"`
+}
+
+type PurchaseOrderFilter struct {
+	SupplierID    string
+	Status        string
+	PaymentStatus string
+	Query         string
+	Page          int
+	Limit         int
+}
+
+type PurchaseOrderPage struct {
+	Items []PurchaseOrder `json:"items"`
+	Total int             `json:"total"`
+	Page  int             `json:"page"`
+	Limit int             `json:"limit"`
+}
+
+type ProcurementPayment struct {
+	ID              string    `json:"id"`
+	PurchaseOrderID string    `json:"purchase_order_id"`
+	Amount          int64     `json:"amount"`
+	PaymentMethod   string    `json:"payment_method"`
+	Reference       string    `json:"reference"`
+	PaidAt          time.Time `json:"paid_at"`
+	CreatedByName   string    `json:"created_by_name"`
+	Notes           string    `json:"notes"`
+}
+
+type ProcurementPaymentInput struct {
+	Amount        int64  `json:"amount"`
+	PaymentMethod string `json:"payment_method"`
+	Reference     string `json:"reference"`
+	Notes         string `json:"notes"`
+}
+
+type ReceiveGoodsItem struct {
+	ItemID           string `json:"item_id"`
+	QuantityReceived int    `json:"quantity_received"`
+}
+
+type ReceiveGoodsInput struct {
+	Items             []ReceiveGoodsItem `json:"items"`
+	UpdateCostPrice   bool               `json:"update_cost_price"` // Whether to update product's cost_price to PO item unit_cost
+	Notes             string             `json:"notes"`
+}
+
+type ProcurementStats struct {
+	TotalSpend           int64 `json:"total_spend"`
+	SpendThisMonth       int64 `json:"spend_this_month"`
+	PendingPOsCount      int   `json:"pending_pos_count"`
+	UnpaidSupplierAmount int64 `json:"unpaid_supplier_amount"`
+	ActiveSuppliersCount int   `json:"active_suppliers_count"`
+	TotalInventoryCost   int64 `json:"total_inventory_cost"`
+	TotalInventoryRetail int64 `json:"total_inventory_retail"`
 }

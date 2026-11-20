@@ -183,71 +183,82 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/me", s.me)
 			r.Post("/password", s.changePassword)
 
-			r.With(requirePerm("dashboard")).Get("/stats", s.stats)
+			r.With(requirePerm("dashboard:read", "dashboard")).Get("/stats", s.stats)
 
-			// Product lists are also needed to pick items for stock moves and invoices.
-			r.With(requirePerm("products", "inventory", "invoices")).Get("/products", s.adminListProducts)
-			r.With(requirePerm("products", "inventory", "invoices")).Get("/products/{id}", s.adminGetProduct)
-			r.With(requirePerm("products", "blog")).Get("/categories", s.listCategories)
-			r.With(requirePerm("products", "blog")).Post("/uploads", s.adminUpload)
+			// Product lists are also needed to pick items for stock moves, invoices and procurement.
+			r.With(requirePerm("products:read", "products", "inventory:read", "inventory", "invoices:read", "invoices", "procurement:read", "procurement")).Get("/products", s.adminListProducts)
+			r.With(requirePerm("products:read", "products", "inventory:read", "inventory", "invoices:read", "invoices", "procurement:read", "procurement")).Get("/products/{id}", s.adminGetProduct)
+			r.With(requirePerm("products:read", "products", "blog:read", "blog")).Get("/categories", s.listCategories)
+			r.With(requirePerm("products:create", "products:update", "products", "blog:create", "blog:update", "blog")).Post("/uploads", s.adminUpload)
 			r.Group(func(r chi.Router) {
-				r.Use(requirePerm("products"))
-				r.Post("/products", s.adminCreateProduct)
-				r.Put("/products/{id}", s.adminUpdateProduct)
-				r.Delete("/products/{id}", s.adminDeleteProduct)
-				r.Post("/categories", s.adminCreateCategory)
-				r.Put("/categories/{id}", s.adminUpdateCategory)
-				r.Delete("/categories/{id}", s.adminDeleteCategory)
+				r.With(requirePerm("products:create", "products")).Post("/products", s.adminCreateProduct)
+				r.With(requirePerm("products:update", "products")).Put("/products/{id}", s.adminUpdateProduct)
+				r.With(requirePerm("products:delete", "products")).Delete("/products/{id}", s.adminDeleteProduct)
+				r.With(requirePerm("products:create", "products")).Post("/categories", s.adminCreateCategory)
+				r.With(requirePerm("products:update", "products")).Put("/categories/{id}", s.adminUpdateCategory)
+				r.With(requirePerm("products:delete", "products")).Delete("/categories/{id}", s.adminDeleteCategory)
 			})
 
 			r.Group(func(r chi.Router) {
-				r.Use(requirePerm("inventory"))
-				r.Post("/products/{id}/stock", s.adminAdjustStock)
-				r.Get("/inventory/movements", s.adminMovements)
+				r.With(requirePerm("inventory:update", "inventory")).Post("/products/{id}/stock", s.adminAdjustStock)
+				r.With(requirePerm("inventory:read", "inventory")).Get("/inventory/movements", s.adminMovements)
 			})
 
 			r.Group(func(r chi.Router) {
-				r.Use(requirePerm("orders"))
-				r.Get("/orders", s.adminListOrders)
-				r.Get("/orders/{id}", s.adminGetOrder)
-				r.Patch("/orders/{id}", s.adminUpdateOrder)
-				r.Post("/orders/{id}/verify-payment", s.adminVerifyOrderPayment)
-				r.Post("/orders/{id}/notify", s.adminNotifyCustomer)
+				r.With(requirePerm("procurement:read", "procurement")).Get("/procurement/stats", s.adminProcurementStats)
+				r.With(requirePerm("procurement:read", "procurement")).Get("/suppliers", s.adminListSuppliers)
+				r.With(requirePerm("procurement:create", "procurement")).Post("/suppliers", s.adminCreateSupplier)
+				r.With(requirePerm("procurement:read", "procurement")).Get("/suppliers/{id}", s.adminGetSupplier)
+				r.With(requirePerm("procurement:update", "procurement")).Put("/suppliers/{id}", s.adminUpdateSupplier)
+				r.With(requirePerm("procurement:delete", "procurement")).Delete("/suppliers/{id}", s.adminDeleteSupplier)
+
+				r.With(requirePerm("procurement:read", "procurement")).Get("/purchase-orders", s.adminListPurchaseOrders)
+				r.With(requirePerm("procurement:create", "procurement")).Post("/purchase-orders", s.adminCreatePurchaseOrder)
+				r.With(requirePerm("procurement:read", "procurement")).Get("/purchase-orders/{id}", s.adminGetPurchaseOrder)
+				r.With(requirePerm("procurement:update", "procurement")).Put("/purchase-orders/{id}", s.adminUpdatePurchaseOrder)
+				r.With(requirePerm("procurement:update", "procurement")).Patch("/purchase-orders/{id}/status", s.adminSetPurchaseOrderStatus)
+				r.With(requirePerm("procurement:delete", "procurement")).Delete("/purchase-orders/{id}", s.adminDeletePurchaseOrder)
+				r.With(requirePerm("procurement:receive", "procurement:update", "procurement")).Post("/purchase-orders/{id}/receive", s.adminReceiveGoods)
+				r.With(requirePerm("procurement:pay", "procurement:update", "procurement")).Post("/purchase-orders/{id}/payments", s.adminRecordProcurementPayment)
 			})
 
 			r.Group(func(r chi.Router) {
-				r.Use(requirePerm("invoices"))
-				r.Get("/invoices", s.adminListInvoices)
-				r.Post("/invoices", s.adminCreateInvoice)
-				r.Get("/invoices/{id}", s.adminGetInvoice)
-				r.Put("/invoices/{id}", s.adminUpdateInvoice)
-				r.Patch("/invoices/{id}/status", s.adminSetInvoiceStatus)
-				r.Delete("/invoices/{id}", s.adminDeleteInvoice)
+				r.With(requirePerm("orders:read", "orders")).Get("/orders", s.adminListOrders)
+				r.With(requirePerm("orders:read", "orders")).Get("/orders/{id}", s.adminGetOrder)
+				r.With(requirePerm("orders:update", "orders")).Patch("/orders/{id}", s.adminUpdateOrder)
+				r.With(requirePerm("orders:update", "orders")).Post("/orders/{id}/verify-payment", s.adminVerifyOrderPayment)
+				r.With(requirePerm("orders:update", "orders")).Post("/orders/{id}/notify", s.adminNotifyCustomer)
 			})
 
 			r.Group(func(r chi.Router) {
-				r.Use(requirePerm("settings"))
-				r.Get("/settings", s.adminSettings)
-				r.Put("/settings", s.adminUpdateSettings)
+				r.With(requirePerm("invoices:read", "invoices")).Get("/invoices", s.adminListInvoices)
+				r.With(requirePerm("invoices:create", "invoices")).Post("/invoices", s.adminCreateInvoice)
+				r.With(requirePerm("invoices:read", "invoices")).Get("/invoices/{id}", s.adminGetInvoice)
+				r.With(requirePerm("invoices:update", "invoices")).Put("/invoices/{id}", s.adminUpdateInvoice)
+				r.With(requirePerm("invoices:update", "invoices")).Patch("/invoices/{id}/status", s.adminSetInvoiceStatus)
+				r.With(requirePerm("invoices:delete", "invoices")).Delete("/invoices/{id}", s.adminDeleteInvoice)
 			})
 
 			r.Group(func(r chi.Router) {
-				r.Use(requirePerm("blog"))
-				r.Get("/blog", s.adminListPosts)
-				r.Post("/blog", s.adminSavePost)
-				r.Get("/blog/{id}", s.adminGetPost)
-				r.Put("/blog/{id}", s.adminSavePost)
-				r.Delete("/blog/{id}", s.adminDeletePost)
+				r.With(requirePerm("settings:read", "settings")).Get("/settings", s.adminSettings)
+				r.With(requirePerm("settings:update", "settings")).Put("/settings", s.adminUpdateSettings)
 			})
 
 			r.Group(func(r chi.Router) {
-				r.Use(requirePerm("reviews"))
-				r.Get("/reviews", s.adminListReviews)
-				r.Patch("/reviews/{id}", s.adminUpdateReview)
-				r.Delete("/reviews/{id}", s.adminDeleteReview)
+				r.With(requirePerm("blog:read", "blog")).Get("/blog", s.adminListPosts)
+				r.With(requirePerm("blog:create", "blog")).Post("/blog", s.adminSavePost)
+				r.With(requirePerm("blog:read", "blog")).Get("/blog/{id}", s.adminGetPost)
+				r.With(requirePerm("blog:update", "blog")).Put("/blog/{id}", s.adminSavePost)
+				r.With(requirePerm("blog:delete", "blog")).Delete("/blog/{id}", s.adminDeletePost)
 			})
 
-			r.With(requirePerm("subscribers")).Get("/subscribers", s.adminSubscribers)
+			r.Group(func(r chi.Router) {
+				r.With(requirePerm("reviews:read", "reviews")).Get("/reviews", s.adminListReviews)
+				r.With(requirePerm("reviews:update", "reviews")).Patch("/reviews/{id}", s.adminUpdateReview)
+				r.With(requirePerm("reviews:delete", "reviews")).Delete("/reviews/{id}", s.adminDeleteReview)
+			})
+
+			r.With(requirePerm("subscribers:read", "subscribers")).Get("/subscribers", s.adminSubscribers)
 
 			// Staff accounts and groups: admins only.
 			r.Group(func(r chi.Router) {

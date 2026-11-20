@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
-import { Check, Loader2, Pencil, Plus, ShieldCheck, Trash2, UserX, UsersRound } from "lucide-react";
+import { Check, KeyRound, Loader2, Pencil, Plus, Shield, ShieldCheck, SlidersHorizontal, Trash2, UserX, UsersRound } from "lucide-react";
 import { useMe } from "@/components/admin/AdminShell";
 import { Badge, Empty, Modal, PageHeader, Panel, Spinner } from "@/components/admin/ui";
+import PermissionMatrix from "@/components/admin/PermissionMatrix";
 import { adminFetch } from "@/lib/admin";
 import { cn, formatDate } from "@/lib/format";
 import type { AdminUser, Permission, StaffGroup } from "@/lib/types";
@@ -28,6 +29,41 @@ export default function StaffPage() {
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState<GroupForm | null>(null);
   const [savingGroup, setSavingGroup] = useState(false);
+
+  // User-specific direct permissions editing
+  const [userEditing, setUserEditing] = useState<AdminUser | null>(null);
+  const [userDirectPerms, setUserDirectPerms] = useState<string[]>([]);
+  const [userGroupId, setUserGroupId] = useState<string>("");
+  const [savingUserPerms, setSavingUserPerms] = useState(false);
+
+  const openUserPerms = (u: AdminUser) => {
+    setUserEditing(u);
+    setUserDirectPerms(u.direct_permissions || []);
+    setUserGroupId(u.group_id || "");
+  };
+
+  const saveUserPerms = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userEditing) return;
+    setSavingUserPerms(true);
+    try {
+      const updated = await adminFetch<AdminUser>(`/staff/${userEditing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          group_id: userGroupId,
+          direct_permissions: userDirectPerms,
+        }),
+      });
+      replaceUser(updated);
+      load();
+      toast.success(`Permissions updated for ${userEditing.name}`);
+      setUserEditing(null);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setSavingUserPerms(false);
+    }
+  };
 
   const load = useCallback(() => {
     Promise.all([adminFetch<{ items: AdminUser[] }>("/staff"), adminFetch<Groups>("/groups")])
@@ -190,16 +226,23 @@ export default function StaffPage() {
                             {u.role === "admin" ? (
                               <span className="text-xs text-mist">Full access</span>
                             ) : (
-                              <select
-                                aria-label={`Group for ${u.name}`}
-                                className="input w-44 py-1.5 text-xs"
-                                value={u.group_id ?? ""}
-                                disabled={busy === u.id}
-                                onChange={(e) => update(u, { group_id: e.target.value }, e.target.value ? "Group assigned" : "Removed from group")}
-                              >
-                                <option value="">No group (no access)</option>
-                                {groups.items.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-                              </select>
+                              <div className="space-y-1">
+                                <select
+                                  aria-label={`Group for ${u.name}`}
+                                  className="input w-44 py-1.5 text-xs"
+                                  value={u.group_id ?? ""}
+                                  disabled={busy === u.id}
+                                  onChange={(e) => update(u, { group_id: e.target.value }, e.target.value ? "Group assigned" : "Removed from group")}
+                                >
+                                  <option value="">No group (custom only)</option>
+                                  {groups.items.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                                </select>
+                                {u.direct_permissions && u.direct_permissions.length > 0 && (
+                                  <span className="block text-[10px] text-amber-800 font-medium">
+                                    +{u.direct_permissions.length} user-specific
+                                  </span>
+                                )}
+                              </div>
                             )}
                           </td>
                           <td className="px-3 py-3"><Badge value={u.status} /></td>
@@ -221,6 +264,15 @@ export default function StaffPage() {
                                 {u.status !== "disapproved" && (
                                   <button className="btn-outline btn-sm" disabled={busy === u.id} onClick={() => update(u, { status: "disapproved" }, `${u.name} disapproved`)}>
                                     <UserX className="h-4 w-4" /> Disapprove
+                                  </button>
+                                )}
+                                {u.status === "approved" && u.role === "staff" && (
+                                  <button
+                                    className="btn-outline btn-sm py-1 px-2 text-xs text-bronze-dark border-bronze/30 hover:bg-sand/40"
+                                    title="Configure CRUD and sensitive permissions"
+                                    onClick={() => openUserPerms(u)}
+                                  >
+                                    <SlidersHorizontal className="h-3.5 w-3.5 mr-1 inline" /> Access
                                   </button>
                                 )}
                                 {u.status === "approved" && (
@@ -315,27 +367,15 @@ export default function StaffPage() {
                 <input id="g-desc" maxLength={300} className="input" placeholder="What this group does" value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
               </div>
             </div>
-            <fieldset>
-              <legend className="label">Sections this group can use</legend>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {groups.permissions.map((p) => (
-                  <label key={p.key} className="flex cursor-pointer items-center gap-2.5 rounded-md border border-line px-3 py-2 text-sm hover:bg-cream/60">
-                    <input
-                      type="checkbox"
-                      className="accent-bronze"
-                      checked={editing.permissions.includes(p.key)}
-                      onChange={(e) =>
-                        setEditing({
-                          ...editing,
-                          permissions: e.target.checked ? [...editing.permissions, p.key] : editing.permissions.filter((x) => x !== p.key),
-                        })
-                      }
-                    />
-                    {p.label}
-                  </label>
-                ))}
-              </div>
-              <p className="mt-1.5 text-xs text-mist">Managing staff and groups is always admin-only.</p>
+            <fieldset className="space-y-2">
+              <legend className="label">Group Permissions & CRUD Controls</legend>
+              <PermissionMatrix
+                selected={editing.permissions}
+                onChange={(perms) => setEditing({ ...editing, permissions: perms })}
+              />
+              <p className="mt-1 text-xs text-mist">
+                Configure which services, CRUD actions, and sensitive controls (such as wholesale cost prices) members of this group inherit.
+              </p>
             </fieldset>
             <fieldset>
               <legend className="label">Members</legend>
@@ -373,6 +413,63 @@ export default function StaffPage() {
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-outline" onClick={() => setEditing(null)}>Cancel</button>
               <button className="btn-primary" disabled={savingGroup}>{savingGroup && <Loader2 className="h-4 w-4 animate-spin" />} {editing.id ? "Save group" : "Create group"}</button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* MODAL: USER-SPECIFIC PERMISSIONS & CRUD CONTROLS */}
+      <Modal
+        open={!!userEditing}
+        onClose={() => setUserEditing(null)}
+        title={userEditing ? `Custom Access & Permissions — ${userEditing.name}` : "User Permissions"}
+        wide
+      >
+        {userEditing && (
+          <form onSubmit={saveUserPerms} className="space-y-5">
+            <div className="rounded-lg bg-sand/30 p-3 text-xs space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <span className="font-semibold text-ink text-sm">{userEditing.name}</span>
+                  <span className="text-mist ml-2">({userEditing.email})</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-stone font-medium">Assigned Group:</span>
+                  <select
+                    className="input py-1 text-xs w-48 bg-white"
+                    value={userGroupId}
+                    onChange={(e) => setUserGroupId(e.target.value)}
+                  >
+                    <option value="">No Group (Direct Only)</option>
+                    {groups.items.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <p className="text-stone text-[11px]">
+                Staff inherit all permissions from their group (marked with <span className="text-stone font-semibold">group</span>). You can configure additional user-specific CRUD actions or sensitive field privileges (such as wholesale cost prices) below.
+              </p>
+            </div>
+
+            <fieldset className="space-y-2">
+              <legend className="label font-semibold">Direct User Permissions & Overrides</legend>
+              <PermissionMatrix
+                selected={userDirectPerms}
+                onChange={setUserDirectPerms}
+                inherited={groups.items.find((g) => g.id === userGroupId)?.permissions || []}
+              />
+            </fieldset>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-line">
+              <button type="button" className="btn-outline" onClick={() => setUserEditing(null)}>
+                Cancel
+              </button>
+              <button className="btn-primary" disabled={savingUserPerms}>
+                {savingUserPerms && <Loader2 className="h-4 w-4 animate-spin mr-1 inline" />} Save Permissions
+              </button>
             </div>
           </form>
         )}

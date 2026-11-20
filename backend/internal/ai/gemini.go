@@ -132,12 +132,35 @@ func (a *Assistant) fallbackResponse(ctx context.Context, isOwner bool, text str
 		}
 		return "⚠️ *Low Stock Alert:*\n\n" + strings.Join(low, "\n")
 
+	case strings.Contains(cmd, "procure") || strings.Contains(cmd, "supplier") || strings.Contains(cmd, "po"):
+		st, err := a.Store.ProcurementStats(ctx)
+		if err != nil {
+			return "⚠️ Could not retrieve procurement stats right now."
+		}
+		return fmt.Sprintf("📦 *Procurement & Suppliers*\n\n"+
+			"• Total Spend: %s\n"+
+			"• Spend This Month: %s\n"+
+			"• Pending POs: %d\n"+
+			"• Unpaid to Suppliers: %s\n"+
+			"• Active Suppliers: %d\n"+
+			"• Inventory Value (Cost): %s\n"+
+			"• Inventory Value (Retail): %s",
+			whatsapp.Naira(st.TotalSpend),
+			whatsapp.Naira(st.SpendThisMonth),
+			st.PendingPOsCount,
+			whatsapp.Naira(st.UnpaidSupplierAmount),
+			st.ActiveSuppliersCount,
+			whatsapp.Naira(st.TotalInventoryCost),
+			whatsapp.Naira(st.TotalInventoryRetail),
+		)
+
 	default:
 		return "👋 *Chris Moore Decor Store Assistant*\n\n" +
 			"Available commands:\n" +
 			"• *sales* or *stats* — Check revenue and order metrics\n" +
 			"• *pending* — View pending orders\n" +
-			"• *stock* — View low stock items\n\n" +
+			"• *stock* — View low stock items\n" +
+			"• *procurement* — View supplier spend and PO metrics\n\n" +
 			"💡 Add GEMINI_API_KEY in backend/.env to unlock conversational text & voice note support."
 	}
 }
@@ -303,6 +326,23 @@ func (a *Assistant) buildTools(isOwner bool) []geminiTool {
 						Required: []string{"query"},
 					},
 				},
+				{
+					Name:        "get_procurement_stats",
+					Description: "Get procurement statistics: supplier spend, pending PO counts, unpaid supplier balances, and inventory cost vs retail valuation.",
+					Parameters: geminiJSON{
+						Type: "OBJECT",
+					},
+				},
+				{
+					Name:        "get_pending_purchase_orders",
+					Description: "List pending or ordered purchase orders from suppliers awaiting delivery or goods receipt.",
+					Parameters: geminiJSON{
+						Type: "OBJECT",
+						Properties: map[string]geminiProp{
+							"limit": {Type: "INTEGER", Description: "Max purchase orders to retrieve (default 5)"},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -436,6 +476,52 @@ func (a *Assistant) executeTool(ctx context.Context, isOwner bool, name string, 
 			"opening_hours":  settings["opening_hours"],
 			"storefront_url": a.FrontendURL,
 		}
+
+	case "get_procurement_stats":
+		if !isOwner {
+			return map[string]any{"error": "unauthorized"}
+		}
+		st, err := a.Store.ProcurementStats(ctx)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		return map[string]any{
+			"total_spend":            whatsapp.Naira(st.TotalSpend),
+			"spend_this_month":       whatsapp.Naira(st.SpendThisMonth),
+			"pending_pos_count":      st.PendingPOsCount,
+			"unpaid_supplier_amount": whatsapp.Naira(st.UnpaidSupplierAmount),
+			"active_suppliers_count": st.ActiveSuppliersCount,
+			"total_inventory_cost":   whatsapp.Naira(st.TotalInventoryCost),
+			"total_inventory_retail": whatsapp.Naira(st.TotalInventoryRetail),
+		}
+
+	case "get_pending_purchase_orders":
+		if !isOwner {
+			return map[string]any{"error": "unauthorized"}
+		}
+		limit := 5
+		if l, ok := args["limit"].(float64); ok && l > 0 {
+			limit = int(l)
+		}
+		page, err := a.Store.ListPurchaseOrders(ctx, models.PurchaseOrderFilter{Status: "ordered", Limit: limit})
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		list := []map[string]any{}
+		for _, po := range page.Items {
+			list = append(list, map[string]any{
+				"po_number":              po.PONumber,
+				"supplier_name":          po.SupplierName,
+				"status":                 po.Status,
+				"payment_status":         po.PaymentStatus,
+				"total_cost":             whatsapp.Naira(po.TotalCost),
+				"amount_paid":            whatsapp.Naira(po.AmountPaid),
+				"order_date":             po.OrderDate,
+				"expected_delivery_date": po.ExpectedDeliveryDate,
+				"items_count":            len(po.Items),
+			})
+		}
+		return map[string]any{"pending_purchase_orders": list, "count": page.Total}
 	}
 
 	return map[string]any{"error": "unknown tool"}

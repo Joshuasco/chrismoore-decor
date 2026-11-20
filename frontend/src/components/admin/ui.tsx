@@ -26,6 +26,10 @@ const BADGE: Record<string, string> = {
   disapproved: "bg-red-50 text-red-700 ring-red-200",
   void: "bg-stone-100 text-stone-600 ring-stone-200",
   overdue: "bg-red-50 text-red-700 ring-red-200",
+  ordered: "bg-sky-50 text-sky-800 ring-sky-200",
+  partially_received: "bg-blue-50 text-blue-800 ring-blue-200",
+  received: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+  partially_paid: "bg-indigo-50 text-indigo-800 ring-indigo-200",
   admin: "bg-ink text-white ring-ink",
   staff: "bg-sand text-cocoa ring-oat",
 };

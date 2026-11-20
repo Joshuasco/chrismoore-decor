@@ -14,14 +14,14 @@ import (
 // ---------- Admin & staff accounts ----------
 
 const userColumns = `u.id, u.email, u.name, u.role, u.status, u.group_id::text, coalesce(g.name, ''),
-	coalesce(g.permissions, '{}'), u.password_hash, u.status_changed_at, u.last_login_at, u.created_at`
+	coalesce(g.permissions, '{}'), coalesce(u.direct_permissions, '{}'), u.password_hash, u.status_changed_at, u.last_login_at, u.created_at`
 
 const userFrom = ` from admin_users u left join staff_groups g on g.id = u.group_id `
 
 func scanUser(row pgx.Row) (models.AdminUser, error) {
 	var u models.AdminUser
 	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.GroupName,
-		&u.Permissions, &u.PasswordHash, &u.StatusChangedAt, &u.LastLoginAt, &u.CreatedAt)
+		&u.GroupPermissions, &u.DirectPermissions, &u.PasswordHash, &u.StatusChangedAt, &u.LastLoginAt, &u.CreatedAt)
 	if err != nil {
 		return u, err
 	}
@@ -30,17 +30,27 @@ func scanUser(row pgx.Row) (models.AdminUser, error) {
 }
 
 // effectivePermissions gives admins every service and drops unknown keys.
+// It computes the union of inherited group permissions and direct user permissions.
 func effectivePermissions(u *models.AdminUser) {
 	if u.Role == "admin" {
 		u.Permissions = models.PermissionKeys()
 		return
 	}
 	known := models.PermissionKeys()
-	out := []string{}
-	for _, p := range u.Permissions {
-		if slices.Contains(known, p) {
+	seen := make(map[string]bool)
+	var out []string
+	inputs := append(u.GroupPermissions, u.DirectPermissions...)
+	if len(inputs) == 0 && len(u.Permissions) > 0 {
+		inputs = u.Permissions
+	}
+	for _, p := range inputs {
+		if slices.Contains(known, p) && !seen[p] {
+			seen[p] = true
 			out = append(out, p)
 		}
+	}
+	if out == nil {
+		out = []string{}
 	}
 	u.Permissions = out
 }
@@ -66,8 +76,8 @@ func (s *Store) CountAdmins(ctx context.Context) (int, error) {
 // CreateAdmin inserts an account with the given role and status.
 func (s *Store) CreateAdmin(ctx context.Context, email, name, hash, role, status string) (models.AdminUser, error) {
 	var id string
-	err := s.db.QueryRow(ctx, `insert into admin_users (email, name, password_hash, role, status)
-		values ($1,$2,$3,$4,$5) returning id`,
+	err := s.db.QueryRow(ctx, `insert into admin_users (email, name, password_hash, role, status, direct_permissions)
+		values ($1,$2,$3,$4,$5,'{}') returning id`,
 		strings.ToLower(strings.TrimSpace(email)), strings.TrimSpace(name), hash, role, status).Scan(&id)
 	if err != nil {
 		return models.AdminUser{}, mapErr(err)
@@ -167,6 +177,21 @@ func (s *Store) UpdateStaff(ctx context.Context, id, actorID string, in models.S
 		}
 		if in.GroupID != nil {
 			if _, err := tx.Exec(ctx, `update admin_users set group_id=nullif($2,'')::uuid where id=$1`, id, *in.GroupID); err != nil {
+				return err
+			}
+		}
+		if in.DirectPermissions != nil {
+			var valid []string
+			known := models.PermissionKeys()
+			for _, p := range *in.DirectPermissions {
+				if slices.Contains(known, p) && !slices.Contains(valid, p) {
+					valid = append(valid, p)
+				}
+			}
+			if valid == nil {
+				valid = []string{}
+			}
+			if _, err := tx.Exec(ctx, `update admin_users set direct_permissions=$2::text[] where id=$1`, id, valid); err != nil {
 				return err
 			}
 		}

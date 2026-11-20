@@ -173,3 +173,74 @@ func TestEffectivePermissions(t *testing.T) {
 		t.Errorf("staff permissions = %v", staff.Permissions)
 	}
 }
+
+func TestDirectAndInheritedPermissions(t *testing.T) {
+	user := models.AdminUser{
+		Role:              "staff",
+		GroupPermissions:  []string{"orders:read", "products:read"},
+		DirectPermissions: []string{"products:cost_price:read", "products:create"},
+	}
+	effectivePermissions(&user)
+
+	if !user.Can("orders:read") {
+		t.Error("expected orders:read from group")
+	}
+	if !user.Can("products:read") {
+		t.Error("expected products:read from group")
+	}
+	if !user.Can("products:cost_price:read") {
+		t.Error("expected products:cost_price:read from direct permissions")
+	}
+	if !user.Can("products:create") {
+		t.Error("expected products:create from direct permissions")
+	}
+	if user.Can("products:delete") {
+		t.Error("expected products:delete to be false")
+	}
+}
+
+func TestNormalizeSupplier(t *testing.T) {
+	in := models.SupplierInput{
+		Name:          "  Turkish Fabrics Ltd  ",
+		ContactPerson: "  Ahmet Yilmaz ",
+		Email:         " AHMET@FABRICS.COM ",
+		Phone:         " +90 555 123 4567 ",
+	}
+	if err := normalizeSupplier(&in); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if in.Name != "Turkish Fabrics Ltd" || in.Email != "ahmet@fabrics.com" || in.Country != "Nigeria" || in.PaymentTerms != "immediate" {
+		t.Errorf("unexpected normalized supplier: %+v", in)
+	}
+	bad := models.SupplierInput{Name: "  "}
+	if err := normalizeSupplier(&bad); err == nil {
+		t.Error("expected error for empty supplier name")
+	}
+}
+
+func TestNormalizePurchaseOrder(t *testing.T) {
+	in := models.PurchaseOrderInput{
+		SupplierID: "  d3b07384-d113-40e9-a35e-c7e6c46a6f65 ",
+		Items: []models.PurchaseOrderItemInput{
+			{ProductName: "  Linen Curtains ", QuantityOrdered: 10, UnitCost: 500000},
+		},
+	}
+	if err := normalizePO(&in); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if in.SupplierID != "d3b07384-d113-40e9-a35e-c7e6c46a6f65" || in.Items[0].ProductName != "Linen Curtains" {
+		t.Errorf("unexpected normalized PO: %+v", in)
+	}
+	for _, bad := range []models.PurchaseOrderInput{
+		{SupplierID: ""},
+		{SupplierID: "some-id", Items: []models.PurchaseOrderItemInput{}},
+		{SupplierID: "some-id", ShippingCost: -100, Items: []models.PurchaseOrderItemInput{{ProductName: "X", QuantityOrdered: 1}}},
+		{SupplierID: "some-id", Items: []models.PurchaseOrderItemInput{{ProductName: "", QuantityOrdered: 1}}},
+		{SupplierID: "some-id", Items: []models.PurchaseOrderItemInput{{ProductName: "X", QuantityOrdered: 0}}},
+		{SupplierID: "some-id", Items: []models.PurchaseOrderItemInput{{ProductName: "X", QuantityOrdered: 1, UnitCost: -5}}},
+	} {
+		if err := normalizePO(&bad); err == nil {
+			t.Errorf("expected error for bad PO: %+v", bad)
+		}
+	}
+}

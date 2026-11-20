@@ -18,6 +18,7 @@ import {
   Package,
   Settings,
   ShoppingCart,
+  Truck,
   UserCog,
   UsersRound,
   X,
@@ -36,6 +37,7 @@ const NAV: NavItem[] = [
   { href: "/admin/invoices", label: "Invoices", icon: FileText, perm: "invoices" },
   { href: "/admin/products", label: "Products", icon: Package, perm: "products" },
   { href: "/admin/inventory", label: "Inventory", icon: Boxes, perm: "inventory" },
+  { href: "/admin/procurement", label: "Procurement", icon: Truck, perm: "procurement" },
   { href: "/admin/categories", label: "Categories", icon: FolderTree, perm: "products" },
   { href: "/admin/reviews", label: "Reviews", icon: MessageSquareQuote, perm: "reviews" },
   { href: "/admin/blog", label: "Blog", icon: Newspaper, perm: "blog" },
@@ -49,7 +51,34 @@ export function canAccess(me: Me, perm: string | null) {
   if (perm === null) return true;
   if (me.role === "admin") return true;
   if (perm === "admin") return false;
-  return me.permissions.includes(perm);
+  if (me.permissions.includes(perm) || me.permissions.includes("*")) return true;
+
+  const parts = perm.split(":");
+  const resource = parts[0];
+  const action = parts.slice(1).join(":");
+
+  if (!action) {
+    // Checking broad resource for nav links (e.g. "products")
+    return (
+      me.permissions.includes(resource) ||
+      me.permissions.includes(`${resource}:*`) ||
+      me.permissions.some((p) => p.startsWith(`${resource}:`))
+    );
+  }
+
+  // Cost price requires explicit permission or legacy full service access
+  if (action.startsWith("cost_price")) {
+    return (
+      me.permissions.includes(perm) ||
+      me.permissions.includes(`${resource}:cost_price:*`) ||
+      me.permissions.includes(resource)
+    );
+  }
+
+  return (
+    me.permissions.includes(`${resource}:*`) ||
+    me.permissions.includes(resource)
+  );
 }
 
 const routeFor = (pathname: string) =>

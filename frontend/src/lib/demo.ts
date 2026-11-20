@@ -65,6 +65,7 @@ export const demoProducts: Product[] = DEMO_PRODUCTS.map((p, i) => {
     description: p.description,
     price: p.price,
     compare_at_price: p.compare_at_price,
+    cost_price: Math.round(p.price * 0.55),
     stock: p.stock,
     low_stock_threshold: 5,
     images: [...p.images],

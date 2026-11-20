@@ -45,6 +45,12 @@ func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	u := adminFrom(r.Context())
+	if !u.Can("products:cost_price:read") {
+		for i := range page.Items {
+			page.Items[i].CostPrice = 0
+		}
+	}
 	writeJSON(w, http.StatusOK, page)
 }
 
@@ -54,6 +60,10 @@ func (s *Server) adminGetProduct(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	u := adminFrom(r.Context())
+	if !u.Can("products:cost_price:read") {
+		p.CostPrice = 0
+	}
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -62,7 +72,11 @@ func (s *Server) adminCreateProduct(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	p, err := s.store.CreateProduct(r.Context(), in, adminFrom(r.Context()).Email)
+	u := adminFrom(r.Context())
+	if in.CostPrice > 0 && !u.Can("products:cost_price:update") {
+		in.CostPrice = 0
+	}
+	p, err := s.store.CreateProduct(r.Context(), in, u.Email)
 	if err != nil {
 		if err == store.ErrInvalid { // bare error: missing required fields; wrapped ones carry their own message
 			writeError(w, http.StatusBadRequest, "name, SKU and a non-negative price and stock are required")
@@ -80,7 +94,21 @@ func (s *Server) adminUpdateProduct(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	p, err := s.store.UpdateProduct(r.Context(), chi.URLParam(r, "id"), in, adminFrom(r.Context()).Email)
+	id := chi.URLParam(r, "id")
+	u := adminFrom(r.Context())
+
+	existing, err := s.store.GetProduct(r.Context(), id)
+	if err == nil {
+		if !u.Can("products:cost_price:update") {
+			in.CostPrice = existing.CostPrice
+		}
+		if !u.Can("products:pricing:update") {
+			in.Price = existing.Price
+			in.CompareAtPrice = existing.CompareAtPrice
+		}
+	}
+
+	p, err := s.store.UpdateProduct(r.Context(), id, in, u.Email)
 	if err != nil {
 		if err == store.ErrInvalid { // bare error: missing required fields; wrapped ones carry their own message
 			writeError(w, http.StatusBadRequest, "name, SKU and a non-negative price and stock are required")

@@ -4,12 +4,14 @@ import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Plus, Search } from "lucide-react";
+import { canAccess, useMe } from "@/components/admin/AdminShell";
 import { Badge, Empty, PageHeader, Panel, Spinner, StockBadge } from "@/components/admin/ui";
 import { adminFetch } from "@/lib/admin";
 import { formatNaira } from "@/lib/format";
 import type { Category, ProductPage } from "@/lib/types";
 
 export default function ProductsPage() {
+  const me = useMe();
   const [data, setData] = useState<ProductPage | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [q, setQ] = useState("");
@@ -39,7 +41,9 @@ export default function ProductsPage() {
       <PageHeader
         title="Products"
         subtitle="Your catalogue of curtains, accessories, bedding, blinds and rugs."
-        actions={<Link href="/admin/products/new" className="btn-primary btn-sm"><Plus className="h-4 w-4" /> Add product</Link>}
+        actions={canAccess(me, "products:create") ? (
+          <Link href="/admin/products/new" className="btn-primary btn-sm"><Plus className="h-4 w-4" /> Add product</Link>
+        ) : undefined}
       />
       <Panel>
         <div className="flex flex-wrap gap-3 border-b border-line p-4">

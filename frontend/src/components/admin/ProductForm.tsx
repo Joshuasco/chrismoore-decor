@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { ImagePlus, Loader2, Trash2, X } from "lucide-react";
 import { Panel } from "./ui";
+import { canAccess, useMe } from "./AdminShell";
 import { adminFetch } from "@/lib/admin";
 import type { Category, Product } from "@/lib/types";
 
@@ -18,6 +19,7 @@ type FormState = {
   description: string;
   price: string; // naira
   compare_at_price: string; // naira
+  cost_price: string; // naira
   stock: string;
   low_stock_threshold: string;
   images: string[];
@@ -38,6 +40,7 @@ const toForm = (p?: Product): FormState => ({
   description: p?.description ?? "",
   price: p ? String(p.price / 100) : "",
   compare_at_price: p?.compare_at_price ? String(p.compare_at_price / 100) : "",
+  cost_price: p?.cost_price ? String(p.cost_price / 100) : "0",
   stock: p ? String(p.stock) : "0",
   low_stock_threshold: p ? String(p.low_stock_threshold) : "5",
   images: p?.images ?? [],
@@ -54,6 +57,12 @@ const kobo = (naira: string) => Math.round(Number(naira || 0) * 100);
 
 export default function ProductForm({ product }: { product?: Product }) {
   const router = useRouter();
+  const me = useMe();
+  const canSeeCost = canAccess(me, "products:cost_price:read");
+  const canEditCost = canAccess(me, "products:cost_price:update");
+  const canEditPricing = canAccess(me, "products:pricing:update");
+  const canUpdateProduct = !product || canAccess(me, "products:update");
+
   const [f, setF] = useState<FormState>(() => toForm(product));
   const [categories, setCategories] = useState<Category[]>([]);
   const [saving, setSaving] = useState(false);
@@ -113,6 +122,7 @@ export default function ProductForm({ product }: { product?: Product }) {
       description: f.description,
       price: kobo(f.price),
       compare_at_price: f.compare_at_price ? kobo(f.compare_at_price) : null,
+      cost_price: kobo(f.cost_price),
       stock: Number(f.stock || 0),
       low_stock_threshold: Number(f.low_stock_threshold || 5),
       images: f.images,
@@ -234,23 +244,57 @@ export default function ProductForm({ product }: { product?: Product }) {
           <div className="grid gap-4 p-5">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="label" htmlFor="price">Price (₦)</label>
-                <input id="price" type="number" min="0" step="0.01" required className="input" {...input("price")} />
+                <label className="label" htmlFor="price">Selling Price (₦)</label>
+                <input id="price" type="number" min="0" step="0.01" required disabled={!!product && !canEditPricing} className="input" {...input("price")} />
               </div>
               <div>
                 <label className="label" htmlFor="compare">Compare-at (₦)</label>
-                <input id="compare" type="number" min="0" step="0.01" className="input" {...input("compare_at_price")} />
+                <input id="compare" type="number" min="0" step="0.01" disabled={!!product && !canEditPricing} className="input" {...input("compare_at_price")} />
               </div>
+              {canSeeCost && (
+                <div>
+                  <label className="label" htmlFor="cost_price">Cost Price (₦)</label>
+                  <input id="cost_price" type="number" min="0" step="0.01" disabled={!canEditCost} className="input" {...input("cost_price")} placeholder="0.00" />
+                </div>
+              )}
               <div>
                 <label className="label" htmlFor="stock">Stock</label>
                 <input id="stock" type="number" min="0" required className="input" {...input("stock")} />
               </div>
-              <div>
+              <div className="col-span-2 sm:col-span-1">
                 <label className="label" htmlFor="low">Low-stock alert at</label>
                 <input id="low" type="number" min="1" className="input" {...input("low_stock_threshold")} />
               </div>
             </div>
-            {product && <p className="text-xs text-mist">Stock edits here are logged as a manual adjustment. Use Inventory for restocks with a reason.</p>}
+
+            {canSeeCost && Number(f.price) > 0 && (
+              <div className="rounded-md bg-cream p-3 text-xs text-stone flex flex-wrap gap-4 items-center justify-between">
+                <div>
+                  <span className="text-mist">Unit Profit: </span>
+                  <strong className={Number(f.price) - Number(f.cost_price || 0) >= 0 ? "text-emerald-700" : "text-rose-700"}>
+                    ₦{Math.max(0, Number(f.price) - Number(f.cost_price || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-mist">Margin: </span>
+                  <strong>
+                    {Number(f.price) > 0 && Number(f.cost_price) > 0
+                      ? `${(((Number(f.price) - Number(f.cost_price)) / Number(f.price)) * 100).toFixed(1)}%`
+                      : "—"}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-mist">Markup: </span>
+                  <strong>
+                    {Number(f.cost_price) > 0
+                      ? `${(((Number(f.price) - Number(f.cost_price)) / Number(f.cost_price)) * 100).toFixed(1)}%`
+                      : "—"}
+                  </strong>
+                </div>
+              </div>
+            )}
+
+            {product && <p className="text-xs text-mist">Stock edits here are logged as a manual adjustment. Use Inventory for restocks or Procurement for supplier orders.</p>}
           </div>
         </Panel>
         <Panel title="Organisation">
@@ -281,10 +325,10 @@ export default function ProductForm({ product }: { product?: Product }) {
           </div>
         </Panel>
         <div className="flex gap-3">
-          <button className="btn-primary flex-1" disabled={saving}>
-            {saving && <Loader2 className="h-4 w-4 animate-spin" />} {product ? "Save changes" : "Create product"}
+          <button className="btn-primary flex-1" disabled={saving || (!!product && !canUpdateProduct)}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />} {product ? (canUpdateProduct ? "Save changes" : "Read-only access") : "Create product"}
           </button>
-          {product && (
+          {product && canAccess(me, "products:delete") && (
             <button type="button" onClick={remove} className="btn border border-red-200 text-red-700 hover:bg-red-50" aria-label="Delete product">
               <Trash2 className="h-4 w-4" />
             </button>
