@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import toast from "react-hot-toast";
-import { Check, KeyRound, Loader2, Pencil, Plus, Shield, ShieldCheck, SlidersHorizontal, Trash2, UserX, UsersRound } from "lucide-react";
+import { Check, ExternalLink, KeyRound, Loader2, Maximize2, Pencil, Plus, Shield, ShieldCheck, SlidersHorizontal, Trash2, UserX, UsersRound } from "lucide-react";
 import { useMe } from "@/components/admin/AdminShell";
 import { Badge, Empty, Modal, PageHeader, Panel, Spinner } from "@/components/admin/ui";
 import PermissionMatrix from "@/components/admin/PermissionMatrix";
@@ -29,6 +30,24 @@ export default function StaffPage() {
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState<GroupForm | null>(null);
   const [savingGroup, setSavingGroup] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const q = new URLSearchParams(window.location.search).get("tab");
+      if (q === "groups" || q === "team") {
+        setTab(q);
+      }
+    }
+  }, []);
+
+  const switchTab = (t: "team" | "groups") => {
+    setTab(t);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", t);
+      window.history.replaceState({}, "", url.toString());
+    }
+  };
 
   // User-specific direct permissions editing
   const [userEditing, setUserEditing] = useState<AdminUser | null>(null);
@@ -159,9 +178,12 @@ export default function StaffPage() {
         subtitle="Approve staff sign-ups and choose which sections each group can use."
         actions={
           tab === "groups" && (
-            <button className="btn-primary btn-sm" onClick={() => setEditing({ name: "", description: "", permissions: [], member_ids: [] })}>
+            <Link
+              href="/admin/staff/groups/new"
+              className="btn-primary btn-sm inline-flex items-center gap-1.5"
+            >
               <Plus className="h-4 w-4" /> New group
-            </button>
+            </Link>
           )
         }
       />
@@ -170,7 +192,7 @@ export default function StaffPage() {
         {(["team", "groups"] as const).map((t) => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => switchTab(t)}
             className={cn("-mb-px border-b-2 pb-2.5", tab === t ? "border-bronze font-medium text-ink" : "border-transparent text-stone hover:text-ink")}
           >
             {t === "team" ? "Team members" : `Groups (${groups.items.length})`}
@@ -309,9 +331,12 @@ export default function StaffPage() {
             <UsersRound className="mx-auto h-8 w-8 text-bronze" />
             <p className="mt-3 font-medium">No groups yet</p>
             <p className="mx-auto mt-1 max-w-sm text-sm text-stone">Create a group such as &ldquo;Sales&rdquo; or &ldquo;Content team&rdquo;, choose the sections it can use, and add staff to it.</p>
-            <button className="btn-primary btn-sm mt-5" onClick={() => setEditing({ name: "", description: "", permissions: [], member_ids: [] })}>
+            <Link
+              href="/admin/staff/groups/new"
+              className="btn-primary btn-sm mt-5 inline-flex items-center gap-1.5"
+            >
               <Plus className="h-4 w-4" /> New group
-            </button>
+            </Link>
           </div>
         </Panel>
       ) : (
@@ -325,13 +350,14 @@ export default function StaffPage() {
                     {g.description && <p className="mt-0.5 text-sm text-stone">{g.description}</p>}
                   </div>
                   <div className="flex shrink-0 gap-1">
-                    <button
-                      className="rounded-md p-2 text-stone hover:bg-sand hover:text-ink"
+                    <Link
+                      href={`/admin/staff/groups/${g.id}`}
+                      className="rounded-md p-2 text-stone hover:bg-sand hover:text-ink transition"
                       aria-label={`Edit ${g.name}`}
-                      onClick={() => setEditing({ id: g.id, name: g.name, description: g.description, permissions: g.permissions, member_ids: g.member_ids })}
+                      title="Edit group on full page"
                     >
                       <Pencil className="h-4 w-4" />
-                    </button>
+                    </Link>
                     <button className="rounded-md p-2 text-stone hover:bg-red-50 hover:text-red-700" aria-label={`Delete ${g.name}`} onClick={() => deleteGroup(g)}>
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -354,9 +380,24 @@ export default function StaffPage() {
         </div>
       )}
 
-      <Modal open={!!editing} onClose={() => setEditing(null)} title={editing?.id ? "Edit group" : "New group"} wide>
+      <Modal
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title={editing?.id ? `Edit group: ${editing.name}` : "New group"}
+        wide
+        size="5xl"
+      >
         {editing && (
           <form onSubmit={saveGroup} className="space-y-5">
+            <div className="flex items-center justify-between pb-2 border-b border-line text-xs">
+              <span className="text-mist">Quick popup editor</span>
+              <Link
+                href={editing.id ? `/admin/staff/groups/${editing.id}` : "/admin/staff/groups/new"}
+                className="inline-flex items-center gap-1 text-bronze hover:underline font-medium"
+              >
+                <Maximize2 className="h-3.5 w-3.5" /> Open in full page view &rarr;
+              </Link>
+            </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="label" htmlFor="g-name">Group name</label>
@@ -424,6 +465,7 @@ export default function StaffPage() {
         onClose={() => setUserEditing(null)}
         title={userEditing ? `Custom Access & Permissions — ${userEditing.name}` : "User Permissions"}
         wide
+        size="5xl"
       >
         {userEditing && (
           <form onSubmit={saveUserPerms} className="space-y-5">

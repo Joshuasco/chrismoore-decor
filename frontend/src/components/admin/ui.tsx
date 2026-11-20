@@ -75,18 +75,35 @@ export function Panel({ title, action, children, className }: { title?: string; 
   );
 }
 
+const MODAL_SIZES = {
+  sm: "max-w-sm",
+  md: "max-w-md",
+  lg: "max-w-lg",
+  xl: "max-w-xl",
+  "2xl": "max-w-2xl",
+  "3xl": "max-w-3xl",
+  "4xl": "max-w-4xl",
+  "5xl": "max-w-5xl",
+  "6xl": "max-w-6xl",
+  full: "max-w-[calc(100vw-2rem)]",
+} as const;
+
 export function Modal({
   open,
   onClose,
   title,
   children,
   wide,
+  size,
+  className,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: React.ReactNode;
   wide?: boolean;
+  size?: keyof typeof MODAL_SIZES;
+  className?: string;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -95,10 +112,17 @@ export function Modal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
   if (!open) return null;
+
+  const widthClass = size
+    ? MODAL_SIZES[size]
+    : wide
+    ? "max-w-5xl"
+    : "max-w-md";
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center p-4" role="dialog" aria-modal aria-label={title}>
       <div className="absolute inset-0 bg-ink/40" onClick={onClose} />
-      <div className={cn("relative max-h-[calc(100svh-2rem)] w-full overflow-y-auto rounded-xl bg-white p-6 shadow-lift", wide ? "max-w-2xl" : "max-w-md")}>
+      <div className={cn("relative max-h-[calc(100svh-2rem)] w-full overflow-y-auto rounded-xl bg-white p-6 shadow-lift", widthClass, className)}>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="font-serif text-2xl font-semibold">{title}</h2>
           <button onClick={onClose} aria-label="Close" className="rounded p-1 hover:bg-sand"><X className="h-5 w-5" /></button>
